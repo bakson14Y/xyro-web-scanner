@@ -1,0 +1,50 @@
+{
+  "katana": {
+    "repository": "https://github.com/projectdiscovery/katana.git",
+    "commit": "09c83e9a8b12b3eda90bd2b5d08b88787cadb62e",
+    "kind": "go",
+    "entry": "./cmd/katana"
+  },
+  "cariddi": {
+    "repository": "https://github.com/edoardottt/cariddi.git",
+    "commit": "de52cc0bc40accdda235b9d6796cd95a7e937a5d",
+    "kind": "go",
+    "entry": "./cmd/cariddi"
+  },
+  "gau": {
+    "repository": "https://github.com/lc/gau.git",
+    "commit": "8201b9d1febadba98e9cb81e3f253284e8a4a88b",
+    "kind": "go",
+    "entry": "./cmd/gau"
+  },
+  "dalfox": {
+    "repository": "https://github.com/hahwul/dalfox.git",
+    "commit": "1e609fec9c885b41bf2ceb81e77533c674928aad",
+    "kind": "rust",
+    "entry": ""
+  },
+  "arjun": {
+    "repository": "https://github.com/s0md3v/Arjun.git",
+    "commit": "d1fb995cb1e064d4e171d83f19f6af79b0a3c5ce",
+    "kind": "python",
+    "entry": ""
+  },
+  "ghauri": {
+    "repository": "https://github.com/r0oth3x49/ghauri.git",
+    "commit": "18e367781caca5f9783a242f34aa90164edc902a",
+    "kind": "python",
+    "entry": ""
+  },
+  "snallygaster": {
+    "repository": "https://github.com/hannob/snallygaster.git",
+    "commit": "ce5efc4a338aab73dabd51b5eac43dfd457789ed",
+    "kind": "python",
+    "entry": ""
+  },
+  "finalrecon": {
+    "repository": "https://github.com/thewhiteh4t/FinalRecon.git",
+    "commit": "b5db3a46921195bec643065c560e19741852957c",
+    "kind": "python",
+    "entry": ""
+  }
+}

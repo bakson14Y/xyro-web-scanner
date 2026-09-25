@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+.venv/
+build/
+dist/
+bin/
+*.spec
+android/.gradle/
+android/app/build/
+android/app/src/main/jniLibs/
+android/local.properties
+*.jks
+*.keystore
+test-results/

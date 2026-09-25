@@ -1,0 +1,41 @@
+plugins {
+    id 'com.android.application'
+    id 'com.chaquo.python'
+}
+android {
+    namespace 'dev.xyro.scanner'
+    compileSdk 35
+    defaultConfig {
+        applicationId 'dev.xyro.scanner'
+        minSdk 26
+        targetSdk 35
+        versionCode 1
+        versionName '0.1.0'
+        ndk { abiFilters 'arm64-v8a', 'x86_64' }
+    }
+    buildFeatures { buildConfig true }
+    compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
+    packaging { jniLibs { useLegacyPackaging true; keepDebugSymbols += ['**/libkatana.so','**/libcariddi.so','**/libgau.so','**/libdalfox.so'] } }
+    signingConfigs {
+        release {
+            if (System.getenv('XYRO_KEYSTORE')) {
+                storeFile file(System.getenv('XYRO_KEYSTORE'))
+                storePassword System.getenv('XYRO_STORE_PASSWORD')
+                keyAlias System.getenv('XYRO_KEY_ALIAS')
+                keyPassword System.getenv('XYRO_KEY_PASSWORD')
+            }
+        }
+    }
+    buildTypes {
+        release { minifyEnabled false; if (System.getenv('XYRO_KEYSTORE')) signingConfig signingConfigs.release }
+    }
+}
+chaquopy {
+    defaultConfig {
+        version '3.11'
+        pip { install '-r', '../../requirements-android.txt' }
+        extractPackages 'engine', 'vendor'
+        pyc { src = false }
+    }
+    sourceSets { main { srcDir '../../build/python' } }
+}

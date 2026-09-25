@@ -1,0 +1,12 @@
+requests==2.34.2
+urllib3==2.8.0
+dnspython==2.8.0
+dicttoxml==1.7.16
+ratelimit==2.2.1
+tldextract==5.3.2
+colorama==0.4.6
+chardet==7.6.0
+ua-generator==2.1.6
+beautifulsoup4==4.15.0
+lxml==5.3.0
+cryptography==42.0.8
