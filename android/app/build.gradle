@@ -33,7 +33,10 @@ android {
 chaquopy {
     defaultConfig {
         version '3.11'
-        pip { install '-r', '../../requirements-android.txt' }
+        pip {
+            options '--find-links', rootProject.file('../build/wheels').absolutePath
+            install '-r', '../../requirements-android.txt'
+        }
         extractPackages 'engine', 'vendor'
         pyc { src = false }
     }
