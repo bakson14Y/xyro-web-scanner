@@ -19,6 +19,17 @@ from .model import finding, plain
 
 ROOT = Path(__file__).resolve().parent.parent
 
+def run_script(path):
+    """Execute a bundled CLI file without consulting platform import hooks.
+
+    Chaquopy's asset finder treats extensionless paths as import locations,
+    which makes runpy.run_path look for a nonexistent __main__ package.
+    """
+    path = Path(path)
+    namespace = {"__name__": "__main__", "__file__": str(path),
+                 "__package__": None, "__spec__": None}
+    exec(compile(path.read_bytes(), str(path), "exec"), namespace)
+
 def binary(name, native_dir=""):
     candidates = ([Path(native_dir) / ("lib" + name + ".so")] if native_dir else [])
     candidates += [ROOT / "bin" / (name + (".exe" if os.name == "nt" else ""))]
@@ -279,7 +290,7 @@ def run_tool(run, tool):
     elif tool == "snallygaster":
         argv = [p.netloc, "--nowww", "--json", "--nohttp" if p.scheme == "https" else "--nohttps"]
         with python_context(run, tool, argv):
-            try: runpy.run_path(str(ROOT / "vendor" / tool / "snallygaster"), run_name="__main__")
+            try: run_script(ROOT / "vendor" / tool / "snallygaster")
             except SystemExit as exc:
                 if exc.code not in (None, 0): raise RuntimeError("snallygaster: " + str(exc.code))
         log = run.folder / "snallygaster.log"

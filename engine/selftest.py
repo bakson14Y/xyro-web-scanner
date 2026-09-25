@@ -6,7 +6,7 @@ import tempfile
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from .adapters import inventory, binary, python_context, ROOT, run_tool
+from .adapters import inventory, binary, python_context, ROOT, run_tool, run_script
 from .model import atomic_json, validate_config, Scope
 from .worker import Run, StageTimeout
 from .proxy import start as start_proxy
@@ -29,7 +29,7 @@ def run(native_dir=""):
                 with python_context(worker, name, ["--help"]):
                     try:
                         if module: runpy.run_module(module, run_name="__main__")
-                        else: runpy.run_path(str(ROOT/"vendor/snallygaster/snallygaster"), run_name="__main__")
+                        else: run_script(ROOT/"vendor/snallygaster/snallygaster")
                     except SystemExit as exc:
                         if exc.code not in (None, 0): raise RuntimeError(str(exc.code))
                 result["python"][name] = True
