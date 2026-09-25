@@ -16,7 +16,7 @@ class StageTimeout(BaseException): pass
 class Run:
     def __init__(self, folder, native_dir=""):
         self.folder = Path(folder).resolve()
-        self.config = json.loads((self.folder / "config.json").read_text())
+        self.config = json.loads((self.folder / "config.json").read_text(encoding="utf-8"))
         self.scope = Scope(self.config["target"])
         self.native_dir = native_dir
         self.urls = [self.scope.target]

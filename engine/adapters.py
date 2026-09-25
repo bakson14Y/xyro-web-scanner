@@ -144,7 +144,7 @@ def native(run, tool, args, stdin=None):
                     raise RuntimeError("Лимит журнала 10 MiB; этап остановлен")
                 time.sleep(.2)
             if process.returncode not in ((0, 1) if tool == "dalfox" else (0,)):
-                tail = output.read_text(errors="replace")[-1600:]
+                tail = output.read_text(encoding="utf-8", errors="replace")[-1600:]
                 raise RuntimeError(f"{tool}: exit={process.returncode}; {plain(tail)}")
         finally:
             if process.poll() is None:
@@ -177,7 +177,7 @@ def run_tool(run, tool):
     p = urlsplit(url)
     if tool == "gau":
         file = native(run, tool, [p.hostname, "--threads", "1", "--timeout", "10", "--retries", "1"])
-        for line in file.read_text(errors="replace").splitlines(): run.add_url(line.strip())
+        for line in file.read_text(encoding="utf-8", errors="replace").splitlines(): run.add_url(line.strip())
     elif tool == "katana":
         seeds = run.folder / "seeds.txt"
         seeds.write_text("\n".join(run.urls), encoding="utf-8")
@@ -238,7 +238,7 @@ def run_tool(run, tool):
                 except SystemExit as exc:
                     if exc.code not in (None, 0): raise RuntimeError("arjun: " + str(exc.code))
             if output.exists():
-                data = json.loads(output.read_text())
+                data = json.loads(output.read_text(encoding="utf-8"))
                 for target, item in data.items():
                     names = item.get("params", [])
                     run.add(finding(tool, "HTTP-параметры", target, ", ".join(names), confidence="tool-reported"))
@@ -256,7 +256,7 @@ def run_tool(run, tool):
                     if exc.code not in (None, 0): raise RuntimeError("ghauri: " + str(exc.code))
         log = run.folder / "ghauri.log"
         if log.exists():
-            for line in log.read_text(errors="replace").splitlines():
+            for line in log.read_text(encoding="utf-8", errors="replace").splitlines():
                 if re.search(r"(?:is injectable|confirmed.*inject|appears to be.*injectable)", line, re.I):
                     run.add(finding(tool, "Возможная SQL-инъекция", url, line, "high"))
     elif tool == "snallygaster":

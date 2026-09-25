@@ -82,7 +82,7 @@ def run(native_dir=""):
                     probe["requests"] = len(requests_seen) - before
                     if probe["status"] == "error":
                         log = Path(folder)/(name+".log")
-                        if log.exists(): probe["log"] = log.read_text(errors="replace")[-2500:]
+                        if log.exists(): probe["log"] = log.read_text(encoding="utf-8", errors="replace")[-2500:]
                     result["probes"][name] = probe
             finally:
                 proxy.shutdown(); proxy.server_close()
