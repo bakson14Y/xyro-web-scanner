@@ -9,13 +9,13 @@ android {
         applicationId 'dev.xyro.scanner'
         minSdk 26
         targetSdk 35
-        versionCode 1
-        versionName '0.1.0'
+        versionCode 10500
+        versionName '1.5.0'
         ndk { abiFilters 'arm64-v8a', 'x86_64' }
     }
     buildFeatures { buildConfig true }
     compileOptions { sourceCompatibility JavaVersion.VERSION_17; targetCompatibility JavaVersion.VERSION_17 }
-    packaging { jniLibs { useLegacyPackaging true; keepDebugSymbols += ['**/libkatana.so','**/libcariddi.so','**/libgau.so','**/libdalfox.so'] } }
+    packaging { jniLibs { useLegacyPackaging true; keepDebugSymbols += ['**/libkatana.so','**/libcariddi.so','**/libgau.so','**/libdalfox.so','**/libnuclei.so','**/libsubfinder.so'] } }
     signingConfigs {
         release {
             if (System.getenv('XYRO_KEYSTORE')) {

@@ -1,0 +1,6 @@
+{
+  "repository": "https://github.com/projectdiscovery/nuclei-templates.git",
+  "commit": "8aae23af7e76d4f2bce1548114fdf91c0c2c40b4",
+  "upstream_release": "10.4.6",
+  "snapshot_date": "2026-09-25"
+}

@@ -12,3 +12,7 @@ android/local.properties
 *.jks
 *.keystore
 test-results/
+
+engine/data/nuclei-templates.zip
+engine/data/nuclei-manifest.json
+.superdesign/

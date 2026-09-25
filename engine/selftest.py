@@ -7,14 +7,15 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from .adapters import inventory, binary, python_context, ROOT, run_tool, run_script
-from .model import atomic_json, validate_config, Scope
+from .model import atomic_json, validate_config, Scope, NATIVE_TOOLS
 from .worker import Run, StageTimeout
 from .proxy import start as start_proxy
 from . import builtin
 
 def run(native_dir=""):
     result = {"inventory": inventory(native_dir), "native": {}, "python": {}, "http": False}
-    for name, flag in (("katana", "-h"), ("cariddi", "-h"), ("gau", "--help"), ("dalfox", "--help")):
+    for name in NATIVE_TOOLS:
+        flag = "--help" if name in ("gau", "dalfox") else "-h"
         try:
             p = subprocess.run([binary(name, native_dir), flag], stdout=subprocess.PIPE,
                                stderr=subprocess.STDOUT, timeout=45)
@@ -45,15 +46,17 @@ def run(native_dir=""):
             result["python"]["finalrecon"] = True
         except Exception as exc: result["python"]["finalrecon"] = str(exc)
     requests_seen = []
+    exposed = [True]
     class Fixture(BaseHTTPRequestHandler):
         def log_message(self, *args): pass
         def do_GET(self):
             requests_seen.append(self.path)
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html")
+            is_git = self.path.split('?')[0] == '/.git/config'
+            self.send_response(404 if is_git and not exposed[0] else 200)
+            self.send_header("Content-Type", "text/plain" if is_git else "text/html")
             self.end_headers()
             try:
-                self.wfile.write(b'<html><title>XYRO fixture</title><body><form><input name="q"></form>XYRO fixture</body></html>')
+                self.wfile.write((b'[core]\nrepositoryformatversion = 0\n[remote "origin"]\nurl = https://example.invalid/local-fixture.git\n' if exposed[0] else b'not found') if is_git else b'<html><title>XYRO fixture</title><body><form><input name="q"></form>XYRO fixture</body></html>')
             except (BrokenPipeError, ConnectionResetError): pass
     site = ThreadingHTTPServer(("127.0.0.1", 0), Fixture)
     threading.Thread(target=site.serve_forever, daemon=True).start()
@@ -67,14 +70,14 @@ def run(native_dir=""):
         result["probes"] = {}
         with tempfile.TemporaryDirectory() as folder:
             config = validate_config({"target": url + "?q=test", "profile": "audit",
-                                      "max_urls": 1, "depth": 1, "rps": 20, "stage_timeout": 15})
+                                      "max_urls": 10, "depth": 1, "rps": 20, "stage_timeout": 15, "nuclei_ids": ["git-config"]})
             atomic_json(Path(folder)/"config.json", config)
             worker = Run(folder, native_dir)
             proxy, worker.proxy_url = start_proxy(worker.scope)
             try:
-                for name in ("katana", "cariddi", "dalfox", "snallygaster", "arjun", "ghauri", "finalrecon"):
+                for name in ("katana", "cariddi", "dalfox", "snallygaster", "arjun", "ghauri", "finalrecon", "nuclei"):
                     before = len(requests_seen)
-                    worker.deadline = time.monotonic() + config["stage_timeout"]
+                    worker.deadline = time.monotonic() + (60 if name == "nuclei" else config["stage_timeout"])
                     probe = {"status": "completed"}
                     try: run_tool(worker, name)
                     except StageTimeout: probe["status"] = "budget"
@@ -84,12 +87,26 @@ def run(native_dir=""):
                         log = Path(folder)/(name+".log")
                         if log.exists(): probe["log"] = log.read_text(encoding="utf-8", errors="replace")[-2500:]
                     result["probes"][name] = probe
+                result["nuclei_positive"] = any(f.get("template_id") == "git-config" for f in worker.findings)
+                exposed[0] = False
+                worker.findings.clear(); worker.ids.clear()
+                for old in Path(folder).glob("nuclei-*.jsonl"): old.unlink()
+                worker.deadline = time.monotonic() + 60
+                try:
+                    run_tool(worker, "nuclei")
+                    result["nuclei_negative"] = not any(f.get("template_id") == "git-config" for f in worker.findings)
+                except (Exception, StageTimeout) as exc:
+                    result["nuclei_negative"] = False
+                    result["nuclei_negative_error"] = str(exc)
+                worker.deadline = time.monotonic() + 15
+                run_tool(worker, "subfinder")  # IP input: no passive-provider request.
             finally:
                 proxy.shutdown(); proxy.server_close()
     finally: site.shutdown(); site.server_close()
     result["ok"] = (all(t["ready"] for t in result["inventory"].values())
-                    and len(result["native"]) == 4
+                    and len(result["native"]) == len(NATIVE_TOOLS)
                     and all(t.get("code") == 0 and t.get("bytes",0)>0 for t in result["native"].values())
                     and all(t is True for t in result["python"].values()) and result["http"]
+                    and result.get("nuclei_positive") is True and result.get("nuclei_negative") is True
                     and all(t["status"] != "error" and t["requests"] > 0 for t in result["probes"].values()))
     return result

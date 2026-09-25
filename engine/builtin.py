@@ -14,15 +14,16 @@ class Links(HTMLParser):
             if key in ("href", "src", "action") and value:
                 self.urls.append(value)
 
-def request(scope, url, timeout=10):
+def request(scope, url, timeout=10, headers=None, method='GET'):
     """Bounded GET; every redirect is checked before issuing another request."""
     for _ in range(6):
         u = urlsplit(scope.require(url))
         cls = http.client.HTTPSConnection if u.scheme == "https" else http.client.HTTPConnection
-        connection = cls(u.hostname, u.port, timeout=timeout)
+        import certifi
+        connection = cls(u.hostname, u.port, timeout=timeout, context=ssl.create_default_context(cafile=certifi.where())) if u.scheme == 'https' else cls(u.hostname, u.port, timeout=timeout)
         try:
-            connection.request("GET", u.path + ("?" + u.query if u.query else ""),
-                               headers={"User-Agent": "XYRO/0.1 (+authorized-assessment)", "Accept-Encoding": "identity"})
+            connection.request(method, u.path + ("?" + u.query if u.query else ""),
+                               headers={"User-Agent": "XYRO/1.5 (+authorized-assessment)", "Accept-Encoding": "identity", **(headers or {})})
             response = connection.getresponse()
             headers = response.getheaders()
             body = response.read(1024 * 1024).decode("utf-8", "replace")
@@ -37,7 +38,7 @@ def request(scope, url, timeout=10):
     raise ValueError("Слишком много перенаправлений")
 
 def run(scope, config, add, add_url, check):
-    pending = [scope.target]
+    pending = list(scope.targets)
     seen = set()
     # Baseline crawler is deliberately small; Katana owns depth crawling.
     while pending and len(seen) < min(config["max_urls"], 10):
@@ -46,7 +47,7 @@ def run(scope, config, add, add_url, check):
         if url in seen:
             continue
         seen.add(url)
-        status, pairs, body, final = request(scope, url)
+        status, pairs, body, final = request(scope, url, headers=config.get('headers', {}))
         add_url(final)
         headers = {k.lower(): v for k, v in pairs}
         if url == scope.target:

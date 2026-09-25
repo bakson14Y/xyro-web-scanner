@@ -7,6 +7,7 @@ ROOT=Path(__file__).resolve().parent.parent
 sep=os.pathsep
 cmd=['python','-m','PyInstaller','--noconfirm','--clean','--name','XYRO','--onedir',
      '--add-data',f'engine/web{sep}engine/web','--add-data',f'vendor{sep}vendor',
+     '--add-data',f'engine/data{sep}engine/data',
      '--add-data',f'tools.lock.json{sep}.','--add-data',f'licenses{sep}licenses',
      '--add-binary',f'bin{sep}bin']
 for package in ('requests','urllib3','certifi','dns','dicttoxml','ratelimit','tldextract',

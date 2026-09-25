@@ -16,7 +16,7 @@ def start(scope):
         def log_message(self, *args): pass
         def do_CONNECT(self):
             p = urlsplit("https://" + self.path)
-            if (p.hostname, p.port or 443) != scope.origin[1:]:
+            if not scope.contains('https://' + self.path + '/'):
                 self.send_error(403, "Outside scope")
                 return
             try:
@@ -40,6 +40,10 @@ def start(scope):
         def do_GET(self): self.forward()
         def do_POST(self): self.forward()
         def do_HEAD(self): self.forward()
+        def do_OPTIONS(self): self.forward()
+        def do_PUT(self): self.forward()
+        def do_PATCH(self): self.forward()
+        def do_DELETE(self): self.forward()
         def forward(self):
             if not scope.contains(self.path):
                 self.send_error(403, "Outside scope")

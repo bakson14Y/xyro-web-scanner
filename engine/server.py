@@ -13,7 +13,8 @@ import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
 from .adapters import ROOT, inventory
-from .model import LABELS, PROFILES, atomic_json, validate_config
+from .model import LABELS, PROFILES, VERSION, atomic_json, validate_config, public_config
+from .reports import render_html, csv_report, sarif_report
 
 class Manager:
     def __init__(self, data_dir, native_dir="", launcher=None):
@@ -56,7 +57,7 @@ class Manager:
             folder.mkdir(mode=0o700)
             atomic_json(folder / "config.json", config)
             atomic_json(folder / "report.json", {"id": job, "target": config["target"], "created": time.time(),
-                        "status": "queued", "stages": [], "findings": [], "urls": [], "config": config})
+                        "status": "queued", "stages": [], "findings": [], "urls": [], "assets": [], "config": public_config(config)})
             try:
                 if self.launcher:
                     self.launcher(str(folder), self.native_dir)
@@ -74,6 +75,30 @@ class Manager:
                 raise
             return job
 
+    def resume(self, job):
+        with self.mutex:
+            if any(x["status"] in ("running", "queued") for x in self.list()):
+                raise ValueError("Дождитесь завершения активной проверки")
+            folder = self.path(job)
+            report = self.report(job)
+            if report["status"] not in ("partial", "cancelled", "interrupted", "error"):
+                raise ValueError("Продолжение доступно для незавершённых проверок")
+            config = json.loads((folder/"config.json").read_text(encoding="utf-8"))
+            config["_resume"] = True
+            atomic_json(folder/"config.json", config)
+            (folder/"cancel").unlink(missing_ok=True)
+            report.update(status="queued", heartbeat=time.time())
+            atomic_json(folder/"report.json", report)
+            try:
+                if self.launcher: self.launcher(str(folder), self.native_dir)
+                else:
+                    args = ([sys.executable,"--worker"] if getattr(sys,"frozen",False) else [sys.executable,str(ROOT/"desktop.py"),"--worker"])
+                    with (folder/"worker.log").open("ab") as log:
+                        self.children.append(subprocess.Popen(args+[str(folder),self.native_dir],cwd=ROOT,stdout=log,stderr=subprocess.STDOUT,start_new_session=os.name!="nt"))
+            except Exception as exc:
+                report.update(status="error",error=str(exc));atomic_json(folder/"report.json",report);raise
+        return job
+
     def cancel(self, job):
         (self.path(job) / "cancel").touch()
 
@@ -81,23 +106,20 @@ class Manager:
         output = io.BytesIO()
         folder = self.path(job)
         with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as z:
+            report = self.report(job)
+            config = json.loads((folder/'config.json').read_text(encoding='utf-8'))
             for path in folder.iterdir():
-                if path.is_file() and path.name != "cancel" and not path.name.endswith(".tmp"):
-                    z.write(path, path.name)
-            z.writestr("report.html", render_html(self.report(job)))
+                if path.is_file() and path.suffix in ('.json','.jsonl','.log','.txt') and path.name != 'config.json':
+                    content = path.read_text(encoding='utf-8', errors='replace')
+                    for secret in config.get('headers',{}).values():
+                        if len(secret) >= 4: content = content.replace(secret, '[скрыто]')
+                    z.writestr(path.name, content)
+            z.writestr('config.json', json.dumps(public_config(config), ensure_ascii=False, indent=2))
+            z.writestr('report.html', render_html(report))
+            z.writestr('findings.csv', csv_report(report))
+            z.writestr('report.sarif', json.dumps(sarif_report(report), ensure_ascii=False, indent=2))
         return output.getvalue()
 
-def render_html(report):
-    e = html.escape
-    rows = "".join("<tr>" + "".join("<td>" + e(str(f.get(k, ""))) + "</td>" for k in
-                   ("severity", "tool", "title", "url", "confidence", "evidence")) + "</tr>" for f in report["findings"])
-    stages = " · ".join(e(s["tool"] + ": " + s["status"]) for s in report["stages"])
-    return ("<!doctype html><html lang='ru'><meta charset='utf-8'><title>XYRO · Отчёт</title>"
-            "<style>body{font:15px system-ui;margin:40px;background:#f7f8fa;color:#172027}table{border-collapse:collapse;width:100%}"
-            "td,th{border:1px solid #ccd3d7;padding:12px;text-align:left;vertical-align:top;overflow-wrap:anywhere}h1{font-size:40px}</style>"
-            "<h1>XYRO / Отчёт</h1><p>" + e(report["target"]) + "</p><p>Состояние: " + e(report["status"]) + "</p><p>" + stages +
-            "</p><p>Кандидаты требуют проверки. Отсутствие находок не доказывает безопасность сайта.</p>"
-            "<table><tr><th>Уровень<th>Модуль<th>Находка<th>URL<th>Статус доказательства<th>Данные</tr>" + rows + "</table></html>")
 
 def serve(manager):
     token = secrets.token_urlsafe(32)
@@ -133,7 +155,7 @@ def serve(manager):
             if not self.authorized(): self.reply(401, {"error": "Требуется локальная сессия"}); return
             try:
                 if path == "/api/info":
-                    self.reply(200, {"version": "0.1.0", "tools": inventory(manager.native_dir), "labels": LABELS,
+                    self.reply(200, {"version": VERSION, "tools": inventory(manager.native_dir), "labels": LABELS,
                                      "profiles": PROFILES, "platform": "android" if manager.native_dir else sys.platform})
                 elif path == "/api/jobs": self.reply(200, manager.list())
                 elif path.startswith("/api/job/"): self.reply(200, manager.report(path.rsplit("/", 1)[1]))
@@ -153,9 +175,11 @@ def serve(manager):
             if not self.authorized(): self.reply(401, {"error": "Требуется локальная сессия"}); return
             try:
                 length = int(self.headers.get("Content-Length", 0))
-                if not 0 < length <= 8192: raise ValueError("Некорректный размер запроса")
+                if not 0 < length <= 64000: raise ValueError("Некорректный размер запроса")
                 data = json.loads(self.rfile.read(length))
                 if self.path == "/api/jobs": self.reply(201, {"id": manager.create(data)})
+                elif self.path.startswith("/api/resume/"):
+                    self.reply(200, {"id":manager.resume(self.path.rsplit("/",1)[1])})
                 elif self.path.startswith("/api/cancel/"):
                     manager.cancel(self.path.rsplit("/", 1)[1]); self.reply(200, {"ok": True})
                 else: self.reply(404, {"error": "Not found"})

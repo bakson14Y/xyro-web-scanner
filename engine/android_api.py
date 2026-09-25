@@ -46,24 +46,25 @@ def smoke(folder, native_dir):
             self.send_response(200)
             self.send_header("Content-Type", "text/html")
             self.end_headers()
-            self.wfile.write(b"<html><title>XYRO local fixture</title>Local service test</html>")
+            self.wfile.write(b'[core]\nrepositoryformatversion = 0\n[remote "origin"]\nurl = https://example.invalid/fixture.git\n' if self.path == '/.git/config' else b"<html><title>XYRO local fixture</title>Local service test</html>")
     fixture = ThreadingHTTPServer(("127.0.0.1", 0), Fixture)
     threading.Thread(target=fixture.serve_forever, daemon=True).start()
     job = None
     try:
         job = _manager.create({"target": "http://127.0.0.1:" + str(fixture.server_port) + "/",
-                               "profile": "recon", "max_urls": 1, "depth": 1,
-                               "rps": 20, "stage_timeout": 20})
-        deadline = time.monotonic() + 120
+                               "profile": "custom", "max_urls": 10, "depth": 1,
+                               "tools": ["recon", "dns", "ports", "webprobe", "katana", "cariddi", "finalrecon", "nuclei"],
+                               "nuclei_ids": ["git-config"], "rps": 20, "stage_timeout": 60})
+        deadline = time.monotonic() + 180
         report = _manager.report(job)
         while report["status"] in ("queued", "running") and time.monotonic() < deadline:
             time.sleep(1)
             report = _manager.report(job)
         result["worker"] = {"status": report["status"], "stages": report["stages"],
-                            "findings": len(report["findings"])}
+                            "findings": len(report["findings"]), "nuclei_detected": any(f.get("template_id") == "git-config" for f in report["findings"])}
         result["ok"] = (result["ok"] and report["status"] in ("completed", "partial")
-                        and len(report["stages"]) == 5 and all(
-                            stage["status"] == "completed" for stage in report["stages"] if stage["tool"] != "gau"))
+                        and len(report["stages"]) == 8 and result["worker"]["nuclei_detected"] and all(
+                            stage["status"] == "completed" for stage in report["stages"]))
     except Exception as exc:
         result.update(ok=False, worker={"error": str(exc)})
     finally:

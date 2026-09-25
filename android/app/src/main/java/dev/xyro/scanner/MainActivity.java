@@ -61,7 +61,12 @@ public class MainActivity extends Activity {
         web.setWebViewClient(new WebViewClient() {
             @Override public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
                 Uri u = request.getUrl();
-                return !(u.getScheme() + "://" + u.getAuthority()).equals(localOrigin);
+                if ((u.getScheme() + "://" + u.getAuthority()).equals(localOrigin)) return false;
+                if (request.isForMainFrame() && request.hasGesture() && ("https".equals(u.getScheme()) || "http".equals(u.getScheme()))) {
+                    try { startActivity(new Intent(Intent.ACTION_VIEW, u)); }
+                    catch (android.content.ActivityNotFoundException ignored) { }
+                }
+                return true;
             }
         });
         setContentView(web); web.loadUrl(url);

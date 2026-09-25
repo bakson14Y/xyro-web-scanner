@@ -17,12 +17,14 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--android', choices=['arm64-v8a', 'x86_64'])
     parser.add_argument('--ndk')
+    parser.add_argument('--only', nargs='*')
     args = parser.parse_args()
     lock = json.loads((ROOT/'tools.lock.json').read_text())
     dest = (ROOT/'android/app/src/main/jniLibs'/args.android) if args.android else ROOT/'bin'
     dest.mkdir(parents=True, exist_ok=True)
     for name, item in lock.items():
         if item['kind'] == 'python': continue
+        if args.only and name not in args.only: continue
         source = ROOT/'build/upstream'/name
         if not (source/'.git').exists():
             source.mkdir(parents=True, exist_ok=True)
@@ -33,6 +35,7 @@ def main():
         actual = subprocess.check_output(['git','rev-parse','HEAD'],cwd=source,text=True).strip()
         if actual != item['commit']: raise RuntimeError('Revision mismatch: '+name)
         env = os.environ.copy()
+        env.setdefault('GOMAXPROCS', '2')
         output = dest / (('lib'+name+'.so') if args.android else (name + ('.exe' if os.name=='nt' else '')))
         target = None
         if args.android:
@@ -48,7 +51,7 @@ def main():
             env['AR_'+key] = str(llvm/'llvm-ar')
             env['RUSTFLAGS'] = '-C link-arg=-Wl,-z,max-page-size=16384'
         if item['kind']=='go':
-            cmd = ['go','build','-trimpath']
+            cmd = ['go','build','-p','2','-trimpath']
             if args.android:
                 cmd += ['-buildmode=pie','-ldflags=-s -w -extldflags=-Wl,-z,max-page-size=16384']
             else: cmd += ['-ldflags=-s -w']

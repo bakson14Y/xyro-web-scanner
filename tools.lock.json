@@ -46,5 +46,19 @@
     "commit": "b5db3a46921195bec643065c560e19741852957c",
     "kind": "python",
     "entry": ""
+  },
+  "nuclei": {
+    "repository": "https://github.com/projectdiscovery/nuclei.git",
+    "commit": "a8c88feb4a1c8e961b7902534ce3af97e9d524a4",
+    "version": "3.11.1",
+    "kind": "go",
+    "entry": "./cmd/nuclei"
+  },
+  "subfinder": {
+    "repository": "https://github.com/projectdiscovery/subfinder.git",
+    "commit": "b360529eebcd29345e44b3a9da3b2b0c04a13ff2",
+    "version": "2.16.0",
+    "kind": "go",
+    "entry": "./cmd/subfinder"
   }
 }
