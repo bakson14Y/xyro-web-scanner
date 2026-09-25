@@ -3,6 +3,7 @@ import importlib
 import importlib.util
 import io
 import json
+import logging
 import math
 import os
 from pathlib import Path
@@ -63,6 +64,11 @@ def python_context(run, tool, argv):
     """Single worker per scan. Never invoked in the UI/server process."""
     import urllib3.connectionpool
     import requests.sessions
+    def loggers():
+        return [logging.getLogger()] + [item for item in logging.Logger.manager.loggerDict.values()
+                                      if isinstance(item, logging.Logger)]
+    logger_state = {item: (list(item.handlers), item.level, item.propagate) for item in loggers()}
+    original_handlers = {handler for handlers, _, _ in logger_state.values() for handler in handlers}
     original_session_init = requests.sessions.Session.__init__
     def session_init(session, *args, **kwargs):
         original_session_init(session, *args, **kwargs)
@@ -112,6 +118,17 @@ def python_context(run, tool, argv):
         sys.settrace(original_trace)
         threading.settrace(thread_trace)
         writer.flush()
+        # Upstream modules create FileHandlers. Close their handles before a
+        # scan directory is exported/removed (Windows forbids deleting open logs).
+        for item in loggers():
+            for handler in list(item.handlers):
+                if handler not in original_handlers:
+                    item.removeHandler(handler)
+                    handler.close()
+        for item, (handlers, level, propagate) in logger_state.items():
+            item.handlers = handlers
+            item.setLevel(level)
+            item.propagate = propagate
         urllib3.connectionpool.HTTPConnectionPool.urlopen = original_urlopen
         requests.sessions.Session.__init__ = original_session_init
         if original_normalizable is not None:
