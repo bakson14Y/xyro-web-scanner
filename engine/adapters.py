@@ -153,6 +153,13 @@ def python_context(run, tool, argv):
         sys.excepthook = original_hook
         sys.argv, sys.path = original_argv, original_path
 
+def runtime_dir(run):
+    # Application jobs share a cache under their owned scans directory.
+    # Standalone/test jobs keep it inside their own writable directory;
+    # walking two parents up from /tmp/job would otherwise select /runtime.
+    parent = run.folder.parent if run.folder.parent.name == 'scans' else run.folder
+    return parent / 'runtime'
+
 def native(run, tool, args, stdin=None, append=False, extra_env=None):
     executable = binary(tool, run.native_dir)
     if not executable: raise FileNotFoundError(tool)
@@ -165,7 +172,7 @@ def native(run, tool, args, stdin=None, append=False, extra_env=None):
     for key in list(env):
         if key.lower() in ("http_proxy", "https_proxy", "all_proxy", "no_proxy", 'pdcp_api_key', 'nuclei_args'):
             env.pop(key)
-    cache = run.folder.parent.parent/'runtime'
+    cache = runtime_dir(run)
     cache.mkdir(parents=True, exist_ok=True)
     env.update(NUCLEI_CONFIG_DIR=str(cache/'nuclei-config'), XDG_CONFIG_HOME=str(cache/'config'),
                SUBFINDER_CONFIG=str(cache/'subfinder-config.yaml'), SUBFINDER_PROVIDER_CONFIG=str(cache/'subfinder-providers.yaml'))
@@ -372,7 +379,7 @@ def nuclei(run):
     selected=templates.select(config)
     if not selected:
         run.progress(templates_total=0,templates_done=0,detail='Нет шаблонов для выбранных фильтров');return
-    root=templates.materialize(run.folder.parent.parent/'runtime')
+    root=templates.materialize(runtime_dir(run))
     checkpoint=run.folder/'nuclei-progress.json'
     completed=set()
     if config.get('_resume') and checkpoint.exists():
