@@ -54,6 +54,11 @@ def main():
             else: cmd += ['-ldflags=-s -w']
             command(cmd+['-o',output,item['entry']],cwd=source,env=env)
         else:
+            # Dalfox is both a library and a binary. Retain Rust metadata during
+            # compilation; upstream strip/LTO settings broke rustc 1.98 builds.
+            env.setdefault('CARGO_PROFILE_RELEASE_STRIP', 'none')
+            env.setdefault('CARGO_PROFILE_RELEASE_LTO', 'false')
+            env.setdefault('CARGO_BUILD_JOBS', '2')
             cmd = ['cargo','build','--release','--locked']
             if target:
                 command(['rustup','target','add',target])
