@@ -112,7 +112,8 @@ class EngineTests(unittest.TestCase):
                     self.assertIn(cm.exception.code,(0,None))
             from engine.adapters import ROOT
             with python_context(run,'snallygaster',['--help']):
-                with self.assertRaises(SystemExit) as cm:runpy.run_path(str(ROOT/'vendor/snallygaster/snallygaster'),run_name='__main__')
+                from engine.adapters import run_script
+                with self.assertRaises(SystemExit) as cm:run_script(ROOT/'vendor/snallygaster/snallygaster')
                 self.assertIn(cm.exception.code,(0,None))
             with python_context(run,'finalrecon',[]):
                 with self.assertRaises(ValueError):requests.get('http://outside.invalid/',timeout=1)
