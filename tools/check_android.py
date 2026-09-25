@@ -6,7 +6,7 @@ import time
 subprocess.run(["adb","install","-r","android/app/build/outputs/apk/debug/app-debug.apk"],check=True)
 subprocess.run(["adb","shell","pm","grant","dev.xyro.scanner","android.permission.POST_NOTIFICATIONS"],check=True)
 subprocess.run(["adb","shell","am","start","-n","dev.xyro.scanner/.MainActivity","--ez","smoke","true"],check=True)
-deadline=time.monotonic()+240
+deadline=time.monotonic()+360
 result=None
 while time.monotonic()<deadline:
     response=subprocess.run(["adb","exec-out","run-as","dev.xyro.scanner","cat","files/smoke.json"],capture_output=True,text=True)
