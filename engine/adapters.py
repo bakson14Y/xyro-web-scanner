@@ -234,7 +234,9 @@ def run_tool(run, tool):
             output = run.folder / ("arjun-" + str(len(seen)) + ".json")
             with python_context(run, tool, ["-u", route, "-oJ", str(output), "-t", "1", "-T", "10",
                                            "--rate-limit", str(c["rps"]), "--disable-redirects"]):
-                runpy.run_module("arjun.__main__", run_name="__main__")
+                try: runpy.run_module("arjun.__main__", run_name="__main__")
+                except SystemExit as exc:
+                    if exc.code not in (None, 0): raise RuntimeError("arjun: " + str(exc.code))
             if output.exists():
                 data = json.loads(output.read_text())
                 for target, item in data.items():
@@ -245,11 +247,13 @@ def run_tool(run, tool):
         for candidate in list(run.urls):
             if not urlsplit(candidate).query: continue
             with python_context(run, tool, ["-u", candidate, "--batch", "--level", "1", "--technique", "BE",
-                                           "--threads", "1", "--timeout", "10", "--delay", str(1/c["rps"])]):
+                                           "--threads", "1", "--timeout", "10"]):
                 from ghauri.scripts.ghauri import main
                 session_module = importlib.import_module("ghauri.common.session")
                 session_module.expanduser = lambda _: str(run.folder / "ghauri-state")
-                main()
+                try: main()
+                except SystemExit as exc:
+                    if exc.code not in (None, 0): raise RuntimeError("ghauri: " + str(exc.code))
         log = run.folder / "ghauri.log"
         if log.exists():
             for line in log.read_text(errors="replace").splitlines():
@@ -277,10 +281,22 @@ def run_tool(run, tool):
             from modules.sslinfo import cert
             data = {}
             out = {"directory": str(run.folder), "format": "txt", "file": str(run.folder / "finalrecon.txt")}
-            headers(url, out, data)
-            dnsrec(p.hostname, "1.1.1.1,8.8.8.8", out, data)
-            if p.scheme == "https": cert(p.hostname, p.port or 443, out, data)
-            for name, value in data.items():
-                run.add(finding(tool, name, url, json.dumps(value, ensure_ascii=False), confidence="observed"))
+            import ipaddress
+            try: ipaddress.ip_address(p.hostname); is_ip = True
+            except ValueError: is_ip = False
+            checks = [(headers, (url, out, data))]
+            if not is_ip:
+                checks.append((dnsrec, (p.hostname, "1.1.1.1,8.8.8.8", out, data)))
+            if p.scheme == "https": checks.append((cert, (p.hostname, p.port or 443, out, data)))
+            errors = []
+            try:
+                for check, arguments in checks:
+                    try: check(*arguments)
+                    except Exception as exc:
+                        errors.append(check.__name__ + ": " + str(exc))
+            finally:
+                for name, value in data.items():
+                    run.add(finding(tool, name, url, json.dumps(value, ensure_ascii=False), confidence="observed"))
+            if errors: raise RuntimeError("; ".join(errors))
     else:
         raise ValueError("Unknown tool: " + tool)

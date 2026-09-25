@@ -4,10 +4,12 @@ import runpy
 import subprocess
 import tempfile
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from .adapters import inventory, binary, python_context, ROOT
+from .adapters import inventory, binary, python_context, ROOT, run_tool
 from .model import atomic_json, validate_config, Scope
-from .worker import Run
+from .worker import Run, StageTimeout
+from .proxy import start as start_proxy
 from . import builtin
 
 def run(native_dir=""):
@@ -42,13 +44,17 @@ def run(native_dir=""):
                 import modules.headers, modules.dns, modules.sslinfo
             result["python"]["finalrecon"] = True
         except Exception as exc: result["python"]["finalrecon"] = str(exc)
+    requests_seen = []
     class Fixture(BaseHTTPRequestHandler):
         def log_message(self, *args): pass
         def do_GET(self):
+            requests_seen.append(self.path)
             self.send_response(200)
             self.send_header("Content-Type", "text/html")
             self.end_headers()
-            self.wfile.write(b"<html>XYRO fixture</html>")
+            try:
+                self.wfile.write(b'<html><title>XYRO fixture</title><body><form><input name="q"></form>XYRO fixture</body></html>')
+            except (BrokenPipeError, ConnectionResetError): pass
     site = ThreadingHTTPServer(("127.0.0.1", 0), Fixture)
     threading.Thread(target=site.serve_forever, daemon=True).start()
     try:
@@ -56,9 +62,34 @@ def run(native_dir=""):
         findings = []
         builtin.run(Scope(url), {"max_urls":1,"rps":20}, findings.append, lambda _:None, lambda:None)
         result["http"] = any(f["title"] == "Нет content-security-policy" for f in findings)
+        # Run the actual adapter arguments against our own fixture. Help-only checks
+        # cannot detect CLI drift or Android networking/execution failures.
+        result["probes"] = {}
+        with tempfile.TemporaryDirectory() as folder:
+            config = validate_config({"target": url + "?q=test", "profile": "audit",
+                                      "max_urls": 1, "depth": 1, "rps": 20, "stage_timeout": 15})
+            atomic_json(Path(folder)/"config.json", config)
+            worker = Run(folder, native_dir)
+            proxy, worker.proxy_url = start_proxy(worker.scope)
+            try:
+                for name in ("katana", "cariddi", "dalfox", "snallygaster", "arjun", "ghauri", "finalrecon"):
+                    before = len(requests_seen)
+                    worker.deadline = time.monotonic() + config["stage_timeout"]
+                    probe = {"status": "completed"}
+                    try: run_tool(worker, name)
+                    except StageTimeout: probe["status"] = "budget"
+                    except (Exception, SystemExit) as exc: probe.update(status="error", error=str(exc))
+                    probe["requests"] = len(requests_seen) - before
+                    if probe["status"] == "error":
+                        log = Path(folder)/(name+".log")
+                        if log.exists(): probe["log"] = log.read_text(errors="replace")[-2500:]
+                    result["probes"][name] = probe
+            finally:
+                proxy.shutdown(); proxy.server_close()
     finally: site.shutdown(); site.server_close()
     result["ok"] = (all(t["ready"] for t in result["inventory"].values())
                     and len(result["native"]) == 4
                     and all(t.get("code") == 0 and t.get("bytes",0)>0 for t in result["native"].values())
-                    and all(t is True for t in result["python"].values()) and result["http"])
+                    and all(t is True for t in result["python"].values()) and result["http"]
+                    and all(t["status"] != "error" and t["requests"] > 0 for t in result["probes"].values()))
     return result
