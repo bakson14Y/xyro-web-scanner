@@ -5,6 +5,14 @@ from html.parser import HTMLParser
 from urllib.parse import urljoin, urlsplit
 from .model import finding
 
+class RedirectOutsideScope(ValueError):
+    """A valid response whose redirect destination has not been authorized."""
+    def __init__(self, source, destination, status):
+        self.source = source
+        self.destination = destination
+        self.status = status
+        super().__init__(f'HTTP {status}: переход с {source} на {destination} остановлен: адрес вне области проверки')
+
 class Links(HTMLParser):
     def __init__(self):
         super().__init__()
@@ -16,6 +24,7 @@ class Links(HTMLParser):
 
 def request(scope, url, timeout=10, headers=None, method='GET'):
     """Bounded GET; every redirect is checked before issuing another request."""
+    request_headers = dict(headers or {})
     for _ in range(6):
         u = urlsplit(scope.require(url))
         cls = http.client.HTTPSConnection if u.scheme == "https" else http.client.HTTPConnection
@@ -23,16 +32,19 @@ def request(scope, url, timeout=10, headers=None, method='GET'):
         connection = cls(u.hostname, u.port, timeout=timeout, context=ssl.create_default_context(cafile=certifi.where())) if u.scheme == 'https' else cls(u.hostname, u.port, timeout=timeout)
         try:
             connection.request(method, u.path + ("?" + u.query if u.query else ""),
-                               headers={"User-Agent": "XYRO/1.5 (+authorized-assessment)", "Accept-Encoding": "identity", **(headers or {})})
+                               headers={"User-Agent": "XYRO/1.5 (+authorized-assessment)", "Accept-Encoding": "identity", **request_headers})
             response = connection.getresponse()
-            headers = response.getheaders()
+            response_headers = response.getheaders()
             body = response.read(1024 * 1024).decode("utf-8", "replace")
             if response.status in (301, 302, 303, 307, 308):
                 location = response.getheader("Location")
                 if location:
-                    url = scope.require(urljoin(url, location))
+                    destination = urljoin(url, location)
+                    if not scope.contains(destination):
+                        raise RedirectOutsideScope(url, destination, response.status)
+                    url = scope.require(destination)
                     continue
-            return response.status, headers, body, url
+            return response.status, response_headers, body, url
         finally:
             connection.close()
     raise ValueError("Слишком много перенаправлений")
@@ -47,7 +59,18 @@ def run(scope, config, add, add_url, check):
         if url in seen:
             continue
         seen.add(url)
-        status, pairs, body, final = request(scope, url, headers=config.get('headers', {}))
+        try:
+            status, pairs, body, final = request(scope, url, headers=config.get('headers', {}))
+        except RedirectOutsideScope as exc:
+            add_url(exc.source)
+            add(finding('recon', 'Редирект за пределы области', exc.source,
+                        str(exc), confidence='observed',
+                        redirect_url=exc.destination,
+                        remediation='Чтобы проверить конечный сайт, начните новую проверку с URL: '
+                                    + exc.destination + '. Для проверки обоих адресов добавьте конечный URL '
+                                    'в дополнительные начальные URL. Схема, хост и порт учитываются отдельно.'))
+            time.sleep(1 / config['rps'])
+            continue
         add_url(final)
         headers = {k.lower(): v for k, v in pairs}
         if url == scope.target:

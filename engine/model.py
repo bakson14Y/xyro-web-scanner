@@ -6,7 +6,7 @@ import time
 from pathlib import Path
 from urllib.parse import urlsplit, urlunsplit
 
-VERSION = '1.5.0'
+VERSION = '1.5.1'
 TOOLS = ('recon', 'subfinder', 'dns', 'ports', 'webprobe', 'gau', 'katana', 'discovery', 'cariddi', 'finalrecon', 'snallygaster', 'arjun', 'nuclei', 'dalfox', 'ghauri')
 PROFILES = {
     'quick': ('recon', 'dns', 'webprobe', 'nuclei'),

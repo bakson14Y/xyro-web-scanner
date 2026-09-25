@@ -51,6 +51,15 @@ def run(native_dir=""):
         def log_message(self, *args): pass
         def do_GET(self):
             requests_seen.append(self.path)
+            if self.path in ('/xyro-redirect', '/xyro-outside'):
+                self.send_response(302)
+                self.send_header('Location', '/xyro-session' if self.path == '/xyro-redirect' else 'https://outside.invalid/')
+                self.end_headers()
+                return
+            if self.path == '/xyro-session':
+                self.send_response(200 if self.headers.get('X-XYRO-Test') == 'redirect-session' else 401)
+                self.end_headers()
+                return
             is_git = self.path.split('?')[0] == '/.git/config'
             self.send_response(404 if is_git and not exposed[0] else 200)
             self.send_header("Content-Type", "text/plain" if is_git else "text/html")
@@ -65,6 +74,13 @@ def run(native_dir=""):
         findings = []
         builtin.run(Scope(url), {"max_urls":1,"rps":20}, findings.append, lambda _:None, lambda:None)
         result["http"] = any(f["title"] == "Нет content-security-policy" for f in findings)
+        redirected = builtin.request(Scope(url), url+'xyro-redirect', headers={'X-XYRO-Test': 'redirect-session'})
+        result['redirect_headers'] = redirected[0] == 200 and redirected[3] == url+'xyro-session'
+        redirect_findings, redirect_urls = [], []
+        builtin.run(Scope(url+'xyro-outside', targets=[url]), {'max_urls': 2, 'rps': 20},
+                    redirect_findings.append, redirect_urls.append, lambda: None)
+        result['redirect_scope'] = (url in redirect_urls and
+            any(f.get('redirect_url') == 'https://outside.invalid/' and f['severity'] == 'info' for f in redirect_findings))
         # Run the actual adapter arguments against our own fixture. Help-only checks
         # cannot detect CLI drift or Android networking/execution failures.
         result["probes"] = {}
@@ -107,6 +123,7 @@ def run(native_dir=""):
                     and len(result["native"]) == len(NATIVE_TOOLS)
                     and all(t.get("code") == 0 and t.get("bytes",0)>0 for t in result["native"].values())
                     and all(t is True for t in result["python"].values()) and result["http"]
+                    and result.get('redirect_headers') is True and result.get('redirect_scope') is True
                     and result.get("nuclei_positive") is True and result.get("nuclei_negative") is True
                     and all(t["status"] != "error" and t["requests"] > 0 for t in result["probes"].values()))
     return result
