@@ -1,4 +1,4 @@
-name: Build and verify XYRO
+name: Build, verify and release XYRO 1.5
 on:
   push:
     branches: [main, master]
@@ -16,13 +16,47 @@ concurrency:
 jobs:
   engine:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      source_sha: ${{ steps.source.outputs.sha }}
     steps:
       - uses: actions/checkout@v4
+      - name: Import verified v1.5 source update
+        if: hashFiles('source-v1.5.zip') != '' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        env:
+          EXPECTED_SHA256: cf8ad1a6bdc6073642fe8f8b65c5d84923fad3789f37e568ec24cb09aded5c36
+        run: |
+          python - <<'PYIMPORT'
+          import hashlib, os, pathlib, zipfile
+          source=pathlib.Path('source-v1.5.zip')
+          assert hashlib.sha256(source.read_bytes()).hexdigest()==os.environ['EXPECTED_SHA256'], 'Unexpected source archive'
+          with zipfile.ZipFile(source) as pack:
+              for item in pack.infolist():
+                  p=pathlib.PurePosixPath(item.filename)
+                  assert not p.is_absolute() and '..' not in p.parts and p.parts[0] not in ('.git','.github'), 'Unsafe archive path'
+              pack.extractall('.')
+          source.unlink()
+          PYIMPORT
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'Implement XYRO 1.5 recon, Nuclei and shared interface [skip ci]'
+          git push origin HEAD:main
+      - id: source
+        name: Record exact source revision
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: pip
-      - run: python -m pip install -r requirements.txt
+      - run: python -m pip install -r requirements.txt PyYAML==6.0.3
+      - run: python tools/prepare_templates.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pinned-nuclei-templates
+          path: engine/data/
+          if-no-files-found: error
       - run: python -m unittest discover -s tests -v
       - run: node --check engine/web/app.js
   desktop:
@@ -35,6 +69,8 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.engine.outputs.source_sha }}
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
@@ -58,6 +94,10 @@ jobs:
         with:
           path: bin/
           key: native-v1-${{ runner.os }}-${{ hashFiles('tools.lock.json', 'tools/build_native.py') }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: pinned-nuclei-templates
+          path: engine/data
       - run: python desktop.py --selftest
       - run: python tools/package_desktop.py
       - name: Test packaged Linux application
@@ -66,10 +106,11 @@ jobs:
       - name: Test packaged Windows application
         if: runner.os == 'Windows'
         run: ./dist/XYRO/XYRO.exe --selftest
+      - run: python tools/archive_desktop.py
       - uses: actions/upload-artifact@v4
         with:
-          name: XYRO-${{ runner.os }}-x64
-          path: dist/XYRO/
+          name: release-${{ runner.os }}
+          path: release-assets/
           if-no-files-found: error
           retention-days: 30
   android-native:
@@ -82,6 +123,8 @@ jobs:
         abi: [arm64-v8a, x86_64]
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.engine.outputs.source_sha }}
       - uses: actions/setup-go@v5
         with:
           go-version: '1.26.x'
@@ -114,11 +157,13 @@ jobs:
           path: android/app/src/main/jniLibs/${{ matrix.abi }}/
           if-no-files-found: error
   android:
-    needs: android-native
+    needs: [engine, android-native]
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.engine.outputs.source_sha }}
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
@@ -141,6 +186,10 @@ jobs:
         with:
           cmdline-tools-version: '12266719'
           packages: 'platform-tools platforms;android-35 build-tools;35.0.0'
+      - uses: actions/download-artifact@v4
+        with:
+          name: pinned-nuclei-templates
+          path: engine/data
       - run: python tools/prepare_android.py
       - run: gradle -p android assembleDebug lintDebug
       - name: Free disk and memory for emulator
@@ -162,12 +211,10 @@ jobs:
       - name: Name APK and calculate checksum
         run: |
           mkdir -p dist
-          cp android/app/build/outputs/apk/debug/app-debug.apk dist/XYRO-Android-universal-debug.apk
-          cd dist
-          sha256sum XYRO-Android-universal-debug.apk > SHA256SUMS.txt
+          cp android/app/build/outputs/apk/debug/app-debug.apk dist/XYRO-1.5.0-Android.apk
       - uses: actions/upload-artifact@v4
         with:
-          name: XYRO-Android-APK
+          name: release-Android
           path: dist/
           if-no-files-found: error
           retention-days: 30
@@ -179,3 +226,43 @@ jobs:
             test-results/
             android/app/build/reports/
           if-no-files-found: ignore
+
+  release:
+    needs: [engine, desktop, android]
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.engine.outputs.source_sha }}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: release-assets
+          merge-multiple: true
+      - name: Verify asset set and checksum
+        run: |
+          python - <<'PYASSETS'
+          from pathlib import Path
+          import hashlib
+          root=Path('release-assets')
+          expected={'XYRO-1.5.0-Android.apk','XYRO-1.5.0-Windows-x64.zip','XYRO-1.5.0-Linux-x64.tar.gz'}
+          assert {p.name for p in root.iterdir()}==expected, 'Unexpected or missing release asset'
+          lines=[]
+          for p in sorted(root.iterdir()):
+              assert p.stat().st_size>1000000, 'Truncated release asset'
+              lines.append(hashlib.sha256(p.read_bytes()).hexdigest()+'  '+p.name)
+          (root/'SHA256SUMS.txt').write_text('\n'.join(lines)+'\n')
+          PYASSETS
+      - name: Publish tested applications
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ needs.engine.outputs.source_sha }}
+        run: |
+          if gh release view v1.5.0 >/dev/null 2>&1; then
+            echo 'v1.5.0 already exists; published assets are preserved.'
+          else
+            gh release create v1.5.0 --target "$SOURCE_SHA" --title 'XYRO 1.5.0 — Nuclei, recon, Android and PC' --notes-file docs/release-v1.5.md release-assets/*
+          fi
