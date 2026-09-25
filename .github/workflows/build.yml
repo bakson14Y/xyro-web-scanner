@@ -22,14 +22,14 @@ jobs:
       source_sha: ${{ steps.source.outputs.sha }}
     steps:
       - uses: actions/checkout@v4
-      - name: Import verified v1.5 source update
-        if: hashFiles('source-v1.5.zip') != '' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+      - name: Import verified v1.5.1 redirect fix
+        if: hashFiles('source-v1.5.1.zip') != '' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
         env:
-          EXPECTED_SHA256: cf8ad1a6bdc6073642fe8f8b65c5d84923fad3789f37e568ec24cb09aded5c36
+          EXPECTED_SHA256: f32b92696de4380cac2ee62cd469d2922c170a8bc7f55924c11888f12723c5ce
         run: |
           python - <<'PYIMPORT'
           import hashlib, os, pathlib, zipfile
-          source=pathlib.Path('source-v1.5.zip')
+          source=pathlib.Path('source-v1.5.1.zip')
           assert hashlib.sha256(source.read_bytes()).hexdigest()==os.environ['EXPECTED_SHA256'], 'Unexpected source archive'
           with zipfile.ZipFile(source) as pack:
               for item in pack.infolist():
@@ -41,7 +41,7 @@ jobs:
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add -A
-          git commit -m 'Implement XYRO 1.5 recon, Nuclei and shared interface [skip ci]'
+          git commit -m 'Fix scoped redirects and request headers in XYRO 1.5.1 [skip ci]'
           git push origin HEAD:main
       - id: source
         name: Record exact source revision
@@ -211,7 +211,7 @@ jobs:
       - name: Name APK and calculate checksum
         run: |
           mkdir -p dist
-          cp android/app/build/outputs/apk/debug/app-debug.apk dist/XYRO-1.5.0-Android.apk
+          cp android/app/build/outputs/apk/debug/app-debug.apk dist/XYRO-1.5.1-Android.apk
       - uses: actions/upload-artifact@v4
         with:
           name: release-Android
@@ -248,7 +248,7 @@ jobs:
           from pathlib import Path
           import hashlib
           root=Path('release-assets')
-          expected={'XYRO-1.5.0-Android.apk','XYRO-1.5.0-Windows-x64.zip','XYRO-1.5.0-Linux-x64.tar.gz'}
+          expected={'XYRO-1.5.1-Android.apk','XYRO-1.5.1-Windows-x64.zip','XYRO-1.5.1-Linux-x64.tar.gz'}
           assert {p.name for p in root.iterdir()}==expected, 'Unexpected or missing release asset'
           lines=[]
           for p in sorted(root.iterdir()):
@@ -261,8 +261,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           SOURCE_SHA: ${{ needs.engine.outputs.source_sha }}
         run: |
-          if gh release view v1.5.0 >/dev/null 2>&1; then
-            echo 'v1.5.0 already exists; published assets are preserved.'
+          if gh release view v1.5.1 >/dev/null 2>&1; then
+            echo 'v1.5.1 already exists; published assets are preserved.'
           else
-            gh release create v1.5.0 --target "$SOURCE_SHA" --title 'XYRO 1.5.0 — Nuclei, recon, Android and PC' --notes-file docs/release-v1.5.md release-assets/*
+            gh release create v1.5.1 --target "$SOURCE_SHA" --title 'XYRO 1.5.1 — исправление редиректов' --notes-file docs/release-v1.5.1.md release-assets/*
           fi
