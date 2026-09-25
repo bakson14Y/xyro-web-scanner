@@ -38,10 +38,10 @@ public class MainActivity extends Activity {
                 if (!Python.isStarted()) Python.start(new AndroidPlatform(getApplicationContext()));
                 Python py = Python.getInstance();
                 String nativeDir = getApplicationInfo().nativeLibraryDir;
+                String url = py.getModule("engine.android_api").callAttr("start", getApplicationContext(), nativeDir).toString();
                 if (BuildConfig.DEBUG && getIntent().getBooleanExtra("smoke", false)) {
                     py.getModule("engine.android_api").callAttr("smoke", getFilesDir().getAbsolutePath(), nativeDir);
                 }
-                String url = py.getModule("engine.android_api").callAttr("start", getApplicationContext(), nativeDir).toString();
                 runOnUiThread(() -> open(url));
             } catch (Exception error) {
                 runOnUiThread(() -> loading.setText("Ошибка запуска:\n" + error));
