@@ -6,6 +6,10 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+env:
+  CARGO_PROFILE_RELEASE_STRIP: none
+  CARGO_PROFILE_RELEASE_LTO: 'false'
+  CARGO_BUILD_JOBS: '2'
 concurrency:
   group: xyro-${{ github.ref }}
   cancel-in-progress: true
@@ -93,7 +97,10 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-      - run: sdkmanager "ndk;28.2.13676358"
+      - uses: android-actions/setup-android@v4
+        with:
+          cmdline-tools-version: '12266719'
+          packages: 'ndk;28.2.13676358'
       - run: rustup update stable
       - name: Build Android executables
         run: python tools/build_native.py --android "${{ matrix.abi }}" --ndk "$ANDROID_HOME/ndk/28.2.13676358"
@@ -128,7 +135,10 @@ jobs:
         with:
           name: native-x86_64
           path: android/app/src/main/jniLibs/x86_64
-      - run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+      - uses: android-actions/setup-android@v4
+        with:
+          cmdline-tools-version: '12266719'
+          packages: 'platform-tools platforms;android-35 build-tools;35.0.0'
       - run: python tools/prepare_android.py
       - run: gradle -p android assembleDebug lintDebug
       - name: Enable KVM
