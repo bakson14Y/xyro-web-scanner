@@ -35,5 +35,39 @@ def smoke(folder, native_dir):
     from .selftest import run
     from .model import atomic_json
     result = run(native_dir)
+    # Exercise the same Java foreground service used by the Start button.
+    # This debug-only entry always targets an in-app loopback fixture.
+    import threading
+    import time
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    class Fixture(BaseHTTPRequestHandler):
+        def log_message(self, *args): pass
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html")
+            self.end_headers()
+            self.wfile.write(b"<html><title>XYRO local fixture</title>Local service test</html>")
+    fixture = ThreadingHTTPServer(("127.0.0.1", 0), Fixture)
+    threading.Thread(target=fixture.serve_forever, daemon=True).start()
+    job = None
+    try:
+        job = _manager.create({"target": "http://127.0.0.1:" + str(fixture.server_port) + "/",
+                               "profile": "recon", "max_urls": 1, "depth": 1,
+                               "rps": 20, "stage_timeout": 20})
+        deadline = time.monotonic() + 120
+        report = _manager.report(job)
+        while report["status"] in ("queued", "running") and time.monotonic() < deadline:
+            time.sleep(1)
+            report = _manager.report(job)
+        result["worker"] = {"status": report["status"], "stages": report["stages"],
+                            "findings": len(report["findings"])}
+        result["ok"] = (result["ok"] and report["status"] in ("completed", "partial")
+                        and len(report["stages"]) == 5 and all(
+                            stage["status"] == "completed" for stage in report["stages"] if stage["tool"] != "gau"))
+    except Exception as exc:
+        result.update(ok=False, worker={"error": str(exc)})
+    finally:
+        if job: _manager.cancel(job)
+        fixture.shutdown(); fixture.server_close()
     atomic_json(Path(folder) / "smoke.json", result)
     return json.dumps(result)
