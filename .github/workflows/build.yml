@@ -1,0 +1,164 @@
+name: Build and verify XYRO
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: xyro-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  engine:
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Expand initial source package
+        run: python -c "import pathlib,zipfile; p=pathlib.Path('source.zip'); (zipfile.ZipFile(p).extractall('.') if p.exists() and not pathlib.Path('desktop.py').exists() else None)"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - run: python -m pip install -r requirements.txt
+      - run: python -m unittest discover -s tests -v
+      - name: Track extracted source files
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- . ':!.github'
+          if ! git diff --cached --quiet; then
+            git commit -m 'Track XYRO source tree after initial package import'
+            git push origin HEAD:main
+          fi
+      - run: node --check engine/web/app.js
+  desktop:
+    needs: engine
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Expand initial source package
+        run: python -c "import pathlib,zipfile; p=pathlib.Path('source.zip'); (zipfile.ZipFile(p).extractall('.') if p.exists() and not pathlib.Path('desktop.py').exists() else None)"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.x'
+          cache: false
+      - name: Rust toolchain
+        run: rustup update stable
+      - run: python -m pip install -r requirements.txt pyinstaller==6.16.0
+      - run: python tools/build_native.py
+      - run: python desktop.py --selftest
+      - run: python tools/package_desktop.py
+      - name: Test packaged Linux application
+        if: runner.os == 'Linux'
+        run: ./dist/XYRO/XYRO --selftest
+      - name: Test packaged Windows application
+        if: runner.os == 'Windows'
+        run: ./dist/XYRO/XYRO.exe --selftest
+      - uses: actions/upload-artifact@v4
+        with:
+          name: XYRO-${{ runner.os }}-x64
+          path: dist/XYRO/
+          if-no-files-found: error
+          retention-days: 30
+  android-native:
+    needs: engine
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        abi: [arm64-v8a, x86_64]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Expand initial source package
+        run: python -c "import pathlib,zipfile; p=pathlib.Path('source.zip'); (zipfile.ZipFile(p).extractall('.') if p.exists() and not pathlib.Path('desktop.py').exists() else None)"
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.x'
+          cache: false
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - run: sdkmanager "ndk;28.2.13676358"
+      - run: rustup update stable
+      - name: Build Android executables
+        run: python tools/build_native.py --android "${{ matrix.abi }}" --ndk "$ANDROID_HOME/ndk/28.2.13676358"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-${{ matrix.abi }}
+          path: android/app/src/main/jniLibs/${{ matrix.abi }}/
+          if-no-files-found: error
+  android:
+    needs: android-native
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Expand initial source package
+        run: python -c "import pathlib,zipfile; p=pathlib.Path('source.zip'); (zipfile.ZipFile(p).extractall('.') if p.exists() and not pathlib.Path('desktop.py').exists() else None)"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.11.1'
+      - uses: actions/download-artifact@v4
+        with:
+          name: native-arm64-v8a
+          path: android/app/src/main/jniLibs/arm64-v8a
+      - uses: actions/download-artifact@v4
+        with:
+          name: native-x86_64
+          path: android/app/src/main/jniLibs/x86_64
+      - run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+      - run: python tools/prepare_android.py
+      - run: gradle -p android assembleDebug lintDebug
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          arch: x86_64
+          target: google_apis
+          disable-animations: true
+          script: python tools/check_android.py
+      - name: Name APK and calculate checksum
+        run: |
+          mkdir -p dist
+          cp android/app/build/outputs/apk/debug/app-debug.apk dist/XYRO-Android-universal-debug.apk
+          sha256sum dist/XYRO-Android-universal-debug.apk > dist/SHA256SUMS.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: XYRO-Android-APK
+          path: dist/
+          if-no-files-found: error
+          retention-days: 30
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: Android-test-results
+          path: |
+            test-results/
+            android/app/build/reports/
+          if-no-files-found: ignore
