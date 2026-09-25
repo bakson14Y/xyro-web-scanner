@@ -143,6 +143,10 @@ jobs:
           packages: 'platform-tools platforms;android-35 build-tools;35.0.0'
       - run: python tools/prepare_android.py
       - run: gradle -p android assembleDebug lintDebug
+      - name: Free disk and memory for emulator
+        run: |
+          gradle --stop
+          sudo rm -rf "${ANDROID_HOME:?}/ndk" /usr/share/dotnet
       - name: Enable KVM
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
