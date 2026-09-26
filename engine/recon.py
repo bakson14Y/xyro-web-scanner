@@ -113,6 +113,8 @@ def web_probe(run):
         run.asset('web',final,url=final,host=urlsplit(final).hostname,status=status,title=title,
                   technologies=tech,server=headers.get('server',''),content_type=headers.get('content-type',''),size=len(body))
         parser=builtin.Links();parser.feed(body)
+        from .forms import capture
+        capture(run,final,body)
         for path in parser.urls:run.add_link(final,path,source='html')
         for path in re.findall(r'''["']((?:https?://|/)[^\s"'<>]{2,300})["']''',body):run.add_link(final,path,source='js-inline')
         for name in re.findall(r'<(?:input|select|textarea)\b[^>]*\bname=["\']([^"\']+)',body,re.I):
@@ -175,6 +177,9 @@ def discovery(run):
             run.add_url(final,source='discovery')
             run.asset('path',final,url=final,status=status,size=len(body),source='discovery')
             content_type=dict((k.lower(),v) for k,v in headers).get('content-type','')
+            if 'html' in content_type:
+                from .forms import capture
+                capture(run,final,body)
             if path=='/robots.txt':
                 for value in re.findall(r'(?im)^(?:allow|disallow|sitemap):\s*(\S+)',body):run.add_link(base,value,source='robots')
             if 'xml' in content_type or path.endswith('.xml'):

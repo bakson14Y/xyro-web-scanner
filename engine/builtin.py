@@ -32,7 +32,7 @@ def request(scope, url, timeout=10, headers=None, method='GET'):
         connection = cls(u.hostname, u.port, timeout=timeout, context=ssl.create_default_context(cafile=certifi.where())) if u.scheme == 'https' else cls(u.hostname, u.port, timeout=timeout)
         try:
             connection.request(method, u.path + ("?" + u.query if u.query else ""),
-                               headers={"User-Agent": "XYRO/1.5 (+authorized-assessment)", "Accept-Encoding": "identity", **request_headers})
+                               headers={"User-Agent": "XYRO/2.0 (+authorized-assessment)", "Accept-Encoding": "identity", **request_headers})
             response = connection.getresponse()
             response_headers = response.getheaders()
             body = response.read(1024 * 1024).decode("utf-8", "replace")

@@ -6,11 +6,11 @@ import time
 from pathlib import Path
 from urllib.parse import urljoin, urlsplit, urlunsplit
 
-VERSION = '1.5.2'
-TOOLS = ('recon', 'subfinder', 'dns', 'ports', 'webprobe', 'gau', 'katana', 'discovery', 'cariddi', 'finalrecon', 'snallygaster', 'arjun', 'nuclei', 'dalfox', 'ghauri')
+VERSION = '2.0.0'
+TOOLS = ('recon', 'subfinder', 'censys', 'dns', 'ports', 'webprobe', 'gau', 'katana', 'discovery', 'cariddi', 'finalrecon', 'snallygaster', 'arjun', 'nuclei', 'dast', 'tls', 'dalfox', 'ghauri', 'auth', 'verify')
 PROFILES = {
-    'quick': ('recon', 'dns', 'webprobe', 'nuclei'),
-    'recon': ('recon', 'subfinder', 'dns', 'ports', 'webprobe', 'gau', 'katana', 'discovery', 'cariddi', 'finalrecon'),
+    'quick': ('recon', 'dns', 'webprobe', 'nuclei', 'tls', 'verify'),
+    'recon': ('recon', 'subfinder', 'censys', 'dns', 'ports', 'webprobe', 'gau', 'katana', 'discovery', 'cariddi', 'finalrecon'),
     'audit': TOOLS,
     'custom': TOOLS,
 }
@@ -19,8 +19,11 @@ LABELS = {'recon': 'HTTP · TLS · Cookies', 'subfinder': 'Пассивный п
           'gau': 'Архивные URL', 'katana': 'Обход сайта · JS · формы', 'discovery': 'Пути · robots · sitemap · API',
           'cariddi': 'JS · секреты · endpoints', 'finalrecon': 'DNS · заголовки · сертификат',
           'snallygaster': 'Открытые служебные файлы', 'arjun': 'Скрытые параметры',
-          'nuclei': 'CVE · экспозиции · конфигурация', 'dalfox': 'XSS', 'ghauri': 'SQL injection'}
-BUILTIN_TOOLS = ('recon', 'dns', 'ports', 'webprobe', 'discovery')
+          'nuclei': 'CVE · HTTP / TCP / DNS / JavaScript', 'dalfox': 'XSS', 'ghauri': 'SQL injection',
+          'dast': 'Nuclei DAST · параметры и тела запросов', 'tls': 'Nuclei SSL / TLS',
+          'censys': 'Censys · пассивная инвентаризация', 'auth': 'JWT · CSRF · сравнение ролей',
+          'verify': 'Повторная проверка совпадений'}
+BUILTIN_TOOLS = ('recon', 'dns', 'ports', 'webprobe', 'discovery', 'censys', 'auth', 'verify')
 NATIVE_TOOLS = ('katana', 'cariddi', 'gau', 'dalfox', 'nuclei', 'subfinder')
 SEVERITIES = ('critical', 'high', 'medium', 'low', 'info')
 
@@ -143,6 +146,48 @@ def validate_config(data):
         headers[key] = value
     if sum(len(k)+len(v) for k,v in headers.items()) > 12000: raise ValueError('Заголовки слишком длинные')
     result['headers'] = headers
+    result['agent_mode'] = data.get('agent_mode', 'auto')
+    if result['agent_mode'] not in ('auto','off','fixed'): raise ValueError('Неизвестный режим агентов')
+    for key, default, low, high in (('agents',2,1,4),('verify_limit',30,1,200),('censys_pages',1,1,10)):
+        try: result[key] = int(data.get(key,default))
+        except (TypeError,ValueError): raise ValueError(key+': ожидается число') from None
+        if not low <= result[key] <= high: raise ValueError(key+f': допустимо {low}–{high}')
+    for key in ('intrusive','include_weak','extended_protocols','oast_enabled','scan_forms'):
+        result[key] = data.get(key,False) is True
+    from .catalog import CATEGORIES
+    result['categories'] = _list(data.get('categories',list(CATEGORIES)))
+    if not result['categories'] or any(k not in CATEGORIES for k in result['categories']): raise ValueError('Некорректные категории')
+    for key in ('censys_token','oast_token'):
+        value = str(data.get(key,''))
+        if len(value)>4096 or any(ord(c)<33 for c in value): raise ValueError('Некорректный '+key)
+        result[key] = value
+    result['censys_org'] = str(data.get('censys_org','')).strip()
+    if result['censys_org'] and not re.fullmatch(r'[a-fA-F0-9-]{36}',result['censys_org']): raise ValueError('Censys organization: UUID')
+    result['oast_server'] = str(data.get('oast_server','')).strip()
+    if result['oast_server']:
+        u=urlsplit(canonical_url(result['oast_server']))
+        if u.scheme!='https' or u.path not in ('','/') or u.query: raise ValueError('OAST: HTTPS origin собственного Interactsh')
+        result['oast_server']=urlunsplit((u.scheme,u.netloc,'','',''))
+    if result['oast_enabled'] and not result['oast_server']: raise ValueError('Укажите Interactsh server для OAST')
+    scope=Scope(target,targets,result['include_subdomains'],ports,result['exclude_paths'])
+    requests=data.get('requests',[])
+    if isinstance(requests,str):
+        try: requests=json.loads(requests) if requests.strip() else []
+        except ValueError: raise ValueError('Запросы: ожидается JSON-массив') from None
+    if not isinstance(requests,list) or len(requests)>100: raise ValueError('Допустимо до 100 импортированных запросов')
+    result['requests']=[]
+    for request in requests:
+        if not isinstance(request,dict): raise ValueError('Некорректный запрос')
+        method=str(request.get('method','GET')).upper()
+        if method not in ('GET','POST','PUT','PATCH','DELETE','HEAD','OPTIONS'): raise ValueError('Неподдерживаемый метод')
+        body=str(request.get('body',''))
+        if len(body)>20000: raise ValueError('Тело запроса: максимум 20000 символов')
+        result['requests'].append({'method':method,'url':scope.require(request.get('url','')),
+                                  'headers':parse_headers(request.get('headers',{})), 'body':body})
+    result['auth_headers_b']=parse_headers(data.get('auth_headers_b',{}))
+    result['auth_urls']=[scope.require(u) for u in _list(data.get('auth_urls',[]))]
+    if len(result['auth_urls'])>30: raise ValueError('До 30 URL для сравнения ролей')
+    result['auth_marker']=str(data.get('auth_marker',''))[:500]
     result['stage_budgets'] = {}
     budgets = data.get('stage_budgets', {})
     if not isinstance(budgets, dict): raise ValueError('Некорректный бюджет этапа')
@@ -156,7 +201,42 @@ def validate_config(data):
 def public_config(config):
     result = dict(config)
     result['headers'] = {k: '[скрыто]' for k in config.get('headers', {})}
+    result['auth_headers_b']={k:'[скрыто]' for k in config.get('auth_headers_b',{})}
+    for key in ('censys_token','oast_token','auth_marker'):
+        result[key]='[скрыто]' if config.get(key) else ''
+    result['requests']=[{'method':r['method'],'url':r['url'],'headers':{k:'[скрыто]' for k in r.get('headers',{})},
+                        'body':'[скрыто]' if r.get('body') else ''} for r in config.get('requests',[])]
     return result
+
+def parse_headers(raw):
+    if isinstance(raw,str):
+        lines=[s for s in raw.splitlines() if s.strip()]
+        if any(':' not in s for s in lines): raise ValueError('Заголовок: Имя: значение')
+        raw=dict(s.split(':',1) for s in lines)
+    if not isinstance(raw,dict) or len(raw)>30: raise ValueError('Некорректные заголовки')
+    result={}
+    for key,value in raw.items():
+        key,value=str(key).strip(),str(value).strip()
+        if not re.fullmatch(r'[A-Za-z0-9-]+',key) or any(ord(c)<32 or ord(c)==127 for c in value): raise ValueError('Некорректный заголовок')
+        if key.lower() in ('host','content-length','transfer-encoding','connection','proxy-authorization','proxy-connection'): raise ValueError('Служебный заголовок: '+key)
+        result[key]=value
+    if sum(len(k)+len(v) for k,v in result.items())>12000: raise ValueError('Заголовки слишком длинные')
+    return result
+
+def secret_values(config):
+    values=list(config.get('headers',{}).values())+list(config.get('auth_headers_b',{}).values())
+    values += [config.get(k,'') for k in ('censys_token','oast_token','auth_marker')]
+    def leaves(value):
+        if isinstance(value,dict):return [s for v in value.values() for s in leaves(v)]
+        if isinstance(value,list):return [s for v in value for s in leaves(v)]
+        return [value] if isinstance(value,str) else []
+    from urllib.parse import parse_qsl
+    for row in config.get('requests',[]):
+        body=row.get('body','');values += list(row.get('headers',{}).values())+[body]
+        try:values += leaves(json.loads(body))
+        except ValueError:values += [v for k,v in parse_qsl(body)]
+    values += [v[7:] for v in list(values) if isinstance(v,str) and v.startswith('Bearer ')]
+    return sorted({str(x) for x in values if len(str(x))>=4},key=len,reverse=True)
 
 def atomic_json(path, value):
     path = Path(path)

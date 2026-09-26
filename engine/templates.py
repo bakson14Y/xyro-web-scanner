@@ -3,9 +3,20 @@ import hashlib
 import json
 from pathlib import Path
 import zipfile
+import threading
+from functools import wraps
+from collections import Counter
+from .catalog import CATEGORIES, exclusion
 
 DATA=Path(__file__).resolve().parent/'data'
 _manifest=None
+_lock=threading.RLock()
+
+def synchronized(fn):
+    @wraps(fn)
+    def call(*args,**kwargs):
+        with _lock:return fn(*args,**kwargs)
+    return call
 
 def manifest():
     global _manifest
@@ -16,9 +27,9 @@ def manifest():
 
 def summary():
     m=manifest()
-    return {k:m.get(k) for k in ('count','commit','snapshot_date','upstream_release','excluded')}
+    return {k:m.get(k) for k in ('count','supported_count','commit','snapshot_date','upstream_release','groups','dast_years','dast_folders')}
 
-def select(config):
+def candidates(config,mode='nuclei'):
     rows=manifest()['templates']
     identifiers=set(config.get('nuclei_ids',[]))
     if identifiers:
@@ -28,9 +39,28 @@ def select(config):
     groups={'fast':{'technologies','exposures','misconfiguration'},
             'balanced':{'technologies','exposures','misconfiguration','cves','vulnerabilities'},'all':None}[preset]
     severities=set(config.get('nuclei_severities',['critical','high','medium','low','info']))
-    return [r for r in rows if r['severity'] in severities and
-            (r['id'] in identifiers if identifiers else groups is None or r['group'] in groups)]
+    categories=set(config.get('categories',CATEGORIES))
+    return [r for r in rows if r['severity'] in severities and r.get('mode','nuclei')==mode and
+            bool(categories.intersection(r.get('categories',['exposure']))) and
+            (r['id'] in identifiers if identifiers else mode!='nuclei' or groups is None or r['group'] in groups)]
 
+def select(config,mode='nuclei'):
+    return [r for r in candidates(config,mode) if not exclusion(r,config)]
+
+def coverage(config):
+    selected={r['path'] for mode in ('nuclei','dast','tls') if mode in config.get('tools',[])
+              for r in select(config,mode)}
+    rows=[]
+    for key,label in CATEGORIES.items():
+        all_rows=[r for r in manifest()['templates'] if key in r.get('categories',[])]
+        active=[r for r in all_rows if r['path'] in selected]
+        reasons=Counter(exclusion(r,config) or 'Не выбран модуль / фильтр' for r in all_rows if r['path'] not in selected)
+        rows.append({'category':key,'label':label,'catalog':len(all_rows),'selected':len(active),
+                     'status':'planned' if active else 'not_selected' if all_rows else 'no_template',
+                     'reasons':dict(reasons)})
+    return rows
+
+@synchronized
 def materialize(cache_dir):
     m=manifest()
     if not m.get('count'): raise FileNotFoundError('Шаблоны Nuclei не включены в сборку')
@@ -49,6 +79,7 @@ def materialize(cache_dir):
     (root/'.complete').write_text(m['archive_sha256'],encoding='utf-8')
     return root
 
+@synchronized
 def configure(cache_dir, root):
     """Install the pinned upstream ignore policy before Nuclei starts offline."""
     from .model import atomic_json

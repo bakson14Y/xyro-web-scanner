@@ -49,6 +49,8 @@ def inventory(native_dir=""):
     from .templates import summary
     result['nuclei']['templates'] = summary()
     result['nuclei']['ready'] = result['nuclei']['ready'] and bool(summary().get('count'))
+    for mode in ('dast','tls'):
+        result[mode]={'ready':result['nuclei']['ready'],'kind':'nuclei'}
     for tool, deps in dependencies.items():
         missing = [x for x in deps if importlib.util.find_spec(x) is None]
         if not (ROOT / "vendor" / tool).is_dir(): missing.append("source")
@@ -166,16 +168,17 @@ def python_context(run, tool, argv):
         sys.argv, sys.path = original_argv, original_path
 
 def runtime_dir(run):
+    if hasattr(run,'cache_dir'):return run.cache_dir
     # Application jobs share a cache under their owned scans directory.
     # Standalone/test jobs keep it inside their own writable directory;
     # walking two parents up from /tmp/job would otherwise select /runtime.
     parent = run.folder.parent if run.folder.parent.name == 'scans' else run.folder
     return parent / 'runtime'
 
-def native(run, tool, args, stdin=None, append=False, extra_env=None):
+def native(run, tool, args, stdin=None, append=False, extra_env=None, log_name=None, include_headers=True):
     executable = binary(tool, run.native_dir)
     if not executable: raise FileNotFoundError(tool)
-    output = run.folder / (tool + ".log")
+    output = run.folder / ((log_name or tool) + ".log")
     env = os.environ.copy()
     env["NO_COLOR"] = "1"
     env['GOMEMLIMIT'] = '384MiB'
@@ -191,7 +194,7 @@ def native(run, tool, args, stdin=None, append=False, extra_env=None):
     for provider in ('PUBLIC', 'GITHUB', 'GITLAB', 'AWS', 'AZURE'):
         env['DISABLE_NUCLEI_TEMPLATES_'+provider+'_DOWNLOAD'] = 'true'
     if extra_env: env.update(extra_env)
-    if tool in ('katana', 'nuclei', 'dalfox'):
+    if include_headers and tool in ('katana', 'nuclei', 'dalfox'):
         flag = '--headers' if tool == 'dalfox' else '-H'
         for key, value in run.config.get('headers', {}).items(): args += [flag, key+': '+value]
     elif tool == 'cariddi' and run.config.get('headers'):
@@ -240,8 +243,8 @@ def json_objects(path):
 def run_tool(run, tool):
     c, url = run.config, run.scope.target
     p = urlsplit(url)
-    if tool == "nuclei":
-        nuclei(run)
+    if tool in ('nuclei','dast','tls'):
+        nuclei(run,mode=tool)
     elif tool == "subfinder":
         subfinder(run)
     elif tool == "gau":
@@ -286,29 +289,33 @@ def run_tool(run, tool):
                             run.add(finding(tool, hit.get("name", category), target, evidence,
                                             "medium" if category == "secrets" else "info"))
     elif tool == "dalfox":
+        from .workflow import dynamic_urls
         targets = run.folder / "dalfox-targets.txt"
-        targets.write_text("\n".join(run.urls), encoding="utf-8")
+        selected=dynamic_urls(run)
+        targets.write_text("\n".join(selected), encoding="utf-8")
+        if not selected:
+            run.progress(status='skipped',detail='Нет динамических URL для Dalfox');return
         result = run.folder / "dalfox.jsonl"
+        incomplete=False
         try:
             native(run, tool, ["file", str(targets), "--format", "jsonl", "--output", str(result),
                               "--workers", "2", "--max-concurrent-targets", "1", "--rate-limit", str(c["rps"]),
                               "--timeout", "10", "--scan-timeout", str(c["stage_timeout"]), "--proxy", run.proxy_url,
-                              "--insecure=false"])
+                              "--max-targets-per-host",str(len(selected)),"--insecure=false"])
         finally:
             if result.exists():
-                incomplete = False
                 for row in json_objects(result):
                     if "meta" in row:
                         if row["meta"].get("incomplete"):
                             incomplete = True
                         continue
                     target = row.get("url") or url
-                    if not run.scope.contains(target): target = url
+                    if not run.scope.contains(target): continue
                     # Keep engine assertions as candidates, not automatically confirmed exploits.
                     run.add(finding(tool, "XSS: результат Dalfox", target,
-                                    json.dumps(row, ensure_ascii=False), "medium"))
-                if incomplete:
-                    raise RuntimeError("Dalfox сообщил incomplete; результаты этапа частичные")
+                                    json.dumps(row, ensure_ascii=False), "medium",categories=['xss']))
+        if incomplete:
+            raise RuntimeError("Dalfox сообщил incomplete; результаты этапа частичные")
     elif tool == "arjun":
         arjun(run)
     elif tool == "ghauri":
@@ -422,58 +429,9 @@ def arjun(run):
     if errors:raise RuntimeError(f'Arjun не завершил {len(errors)} адресов; результаты остальных сохранены. '
                                 'Причина в журнале; продолжение повторит незавершённые адреса.')
 
-def nuclei(run):
-    from . import templates
-    config=run.config
-    selected=templates.select(config)
-    if not selected:
-        run.progress(templates_total=0,templates_done=0,detail='Нет шаблонов для выбранных фильтров');return
-    root=templates.materialize(runtime_dir(run))
-    templates.configure(runtime_dir(run), root)
-    checkpoint=run.folder/'nuclei-progress.json'
-    completed=set()
-    if config.get('_resume') and checkpoint.exists():
-        saved=json.loads(checkpoint.read_text(encoding='utf-8'))
-        if saved.get('snapshot')==templates.manifest()['commit']:completed=set(saved.get('completed',[]))
-    targets=list(dict.fromkeys(list(run.scope.targets)+[a['url'] for a in run.assets if a['kind']=='web']))[:config.get('max_hosts',40)]
-    seeds=run.folder/'nuclei-targets.txt';seeds.write_text('\n'.join(targets),encoding='utf-8')
-    pending=[row for row in selected if row['id'] not in completed]
-    run.progress(templates_total=len(selected),templates_done=len(completed.intersection(r['id'] for r in selected)))
-    run.log('nuclei',f'Встроенная база: {templates.manifest()["commit"][:12]}; выбрано {len(selected)} шаблонов. '
-                    f'Завершено ранее: {len(completed.intersection(r["id"] for r in selected))}.')
-    def consume(result):
-        if not result.exists():return
-        for row in json_objects(result):
-            target=row.get('matched-at') or row.get('url') or row.get('host') or run.scope.target
-            if not run.scope.contains(target):continue
-            info=row.get('info',{})
-            classification=info.get('classification') or {}
-            evidence='; '.join(filter(None,[row.get('matcher-name',''),str(info.get('description',''))[:2000]])) or 'Совпадение условий официального шаблона'
-            extracted=row.get('extracted-results') or []
-            if extracted:
-                evidence+='; извлечено значений: '+str(len(extracted))+'; SHA256='+__import__('hashlib').sha256(json.dumps(extracted).encode()).hexdigest()[:20]
-            run.add(finding('nuclei',info.get('name',row.get('template-id','Nuclei')),target,evidence,
-                    info.get('severity','info'),'template-match',template_id=row.get('template-id',''),
-                    cve=classification.get('cve-id',[]),cwe=classification.get('cwe-id',[]),
-                    cvss=classification.get('cvss-score'),references=info.get('reference',[]),
-                    remediation=info.get('remediation','Проверьте условия шаблона и рекомендации производителя.')))
-    for offset in range(0,len(pending),64):
-        run.check()
-        batch=pending[offset:offset+64]
-        run.log('nuclei',f'Пакет {offset//64+1}/{math.ceil(len(pending)/64)}: {len(batch)} шаблонов')
-        fingerprint=__import__('hashlib').sha256('\n'.join(r['id'] for r in batch).encode()).hexdigest()[:16]
-        result=run.folder/('nuclei-'+fingerprint+'.jsonl')
-        args=['-l',str(seeds),'-t',','.join(str(root/r['path']) for r in batch),
-              '-jle',str(result),'-nc','-silent','-duc','-ni','-dut','-pt','http','-dr','-nh','-no-stdin',
-              '-or','-ot','-c',str(config.get('concurrency',3)),'-bs','1','-pc','1',
-              '-rl',str(config['rps']),'-timeout','8','-retries','0','-rsr','1048576','-p',run.proxy_url]
-        try:native(run,'nuclei',args,append=True,extra_env={'NUCLEI_TEMPLATES_DIR':str(root)})
-        finally:consume(result)
-        completed.update(r['id'] for r in batch)
-        atomic_json(checkpoint,{'completed':sorted(completed),'snapshot':templates.manifest()['commit']})
-        run.progress(templates_done=len(completed.intersection(r['id'] for r in selected)))
-        run.log('nuclei',f'Пакет завершён; всего {len(completed.intersection(r["id"] for r in selected))}/{len(selected)} шаблонов')
-        run.persist()
+def nuclei(run,mode='nuclei'):
+    from .nuclei_runner import run as execute
+    return execute(run,mode)
 
 
 def subfinder(run):

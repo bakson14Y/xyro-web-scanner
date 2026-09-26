@@ -6,6 +6,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+from patch_native import dalfox as patch_dalfox
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -34,6 +35,11 @@ def main():
         command(['git', 'checkout', '--detach', item['commit']], cwd=source)
         actual = subprocess.check_output(['git','rev-parse','HEAD'],cwd=source,text=True).strip()
         if actual != item['commit']: raise RuntimeError('Revision mismatch: '+name)
+        if name == 'dalfox':
+            # Reset only our generated, pinned upstream checkout on rebuild.
+            command(['git','restore','src/target_parser/mod.rs','src/oob/interactsh/mod.rs',
+                     'src/payload/remote.rs','src/lib.rs'],cwd=source)
+            patch_dalfox(source)
         env = os.environ.copy()
         env.setdefault('GOMAXPROCS', '2')
         output = dest / (('lib'+name+'.so') if args.android else (name + ('.exe' if os.name=='nt' else '')))

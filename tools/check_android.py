@@ -24,11 +24,11 @@ ui=""
 while time.monotonic()<ui_deadline:
     subprocess.run(["adb","shell","uiautomator","dump","/sdcard/xyro-ui.xml"],capture_output=True)
     ui=subprocess.run(["adb","exec-out","cat","/sdcard/xyro-ui.xml"],capture_output=True,text=True).stdout
-    if "15 / 15 МОДУЛЕЙ" in ui: break
+    if "20 / 20 МОДУЛЕЙ" in ui: break
     time.sleep(2)
 Path("test-results/android-ui.xml").write_text(ui)
 shot=subprocess.run(["adb","exec-out","screencap","-p"],capture_output=True,check=True)
 Path("test-results/android-screen.png").write_bytes(shot.stdout)
-if "15 / 15 МОДУЛЕЙ" not in ui:
-    raise SystemExit("Android interface did not connect to all fifteen modules")
+if "20 / 20 МОДУЛЕЙ" not in ui:
+    raise SystemExit("Android interface did not connect to all twenty modules")
 print(json.dumps(result,indent=2))

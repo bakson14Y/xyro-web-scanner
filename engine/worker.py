@@ -8,7 +8,7 @@ import traceback
 from urllib.parse import urlsplit, parse_qsl
 from . import builtin
 from .adapters import inventory, run_tool
-from .model import Scope, PROFILES, VERSION, atomic_json, canonical_url, plain, public_config, safe_join
+from .model import Scope, PROFILES, VERSION, atomic_json, canonical_url, plain, public_config, safe_join, secret_values
 from .proxy import start as start_proxy
 
 class Cancelled(BaseException): pass
@@ -21,6 +21,11 @@ class Run:
         c=self.config
         self.scope=Scope(c['target'],c.get('targets',[]),c.get('include_subdomains',False),c.get('ports',[]),c.get('exclude_paths',[]))
         self.native_dir=native_dir
+        self.cache_dir=(self.folder.parent if self.folder.parent.name=='scans' else self.folder)/'runtime'
+        self.captured_requests=[]
+        capture=self.folder/'captured-requests.json'
+        if c.get('_resume') and capture.exists():
+            self.captured_requests=json.loads(capture.read_text(encoding='utf-8'))
         previous={}
         if c.get('_resume') and (self.folder/'report.json').exists():
             previous=json.loads((self.folder/'report.json').read_text(encoding='utf-8'))
@@ -37,10 +42,13 @@ class Run:
         self.rate_lock=threading.Lock()
         self.last_request=0.0
         self.deadline=float('inf')
-        self.completed={s['tool']:s for s in previous.get('stages',[]) if s['status']=='completed'}
+        self.completed={s['tool']:s for s in previous.get('stages',[]) if s['status']=='completed' and previous.get('version',VERSION)==VERSION and s['tool']!='verify'}
         self.state={'id':self.folder.name,'version':VERSION,'status':'running','created':previous.get('created',time.time()),
                     'target':self.scope.target,'config':public_config(c),'stages':[],'findings':self.findings,'urls':self.urls,
-                    'assets':self.assets,'metrics':previous.get('metrics',{'http_requests':0}), 'resumed':bool(previous)}
+                    'assets':self.assets,'metrics':previous.get('metrics',{'http_requests':0}), 'resumed':bool(previous),
+                    'tasks':previous.get('tasks',[])}
+        from .templates import coverage
+        self.state['coverage']=coverage(c)
         self.done=threading.Event()
         for url in self.urls:
             self.asset('url',url,url=url,source='seed')
@@ -58,12 +66,7 @@ class Run:
         if time.monotonic()>self.deadline:raise StageTimeout()
 
     def request(self,url,timeout=10,headers=None,method='GET'):
-        self.check()
-        with self.rate_lock:
-            wait=1/self.config['rps']-(time.monotonic()-self.last_request)
-            if wait>0:time.sleep(wait)
-            self.last_request=time.monotonic()
-        self.check()
+        self.pace()
         with self.lock:self.state['metrics']['http_requests']=self.state['metrics'].get('http_requests',0)+1
         return builtin.request(self.scope,url,timeout,headers={**self.config.get('headers',{}),**(headers or {})},method=method)
 
@@ -100,14 +103,28 @@ class Run:
                 for key,_ in parse_qsl(urlsplit(value).query,keep_blank_values=True):
                     self.asset('parameter',value.split('?')[0]+'|'+key,url=value.split('?')[0],name=key,source='query')
 
+    def capture_request(self, record):
+        if not self.scope.contains(record['url']):return
+        with self.lock:
+            if len(self.captured_requests)<100 and record not in self.captured_requests:
+                self.captured_requests.append(record)
+                atomic_json(self.folder/'captured-requests.json',self.captured_requests)
+
+    def pace(self):
+        self.check()
+        with self.rate_lock:
+            wait=1/self.config['rps']-(time.monotonic()-self.last_request)
+            if wait>0:time.sleep(wait)
+            self.last_request=time.monotonic()
+        self.check()
+
     def add_link(self,base,reference,source='tool'):
         url=safe_join(base,reference)
         if url:self.add_url(url,source=source)
 
     def redact(self,text):
         text=plain(text)
-        for value in self.config.get('headers',{}).values():
-            if len(value)>=4:text=text.replace(value,'[скрыто]')
+        for value in secret_values(self.config):text=text.replace(value,'[скрыто]')
         return text
 
     def add(self,item):
@@ -127,40 +144,13 @@ class Run:
             if self.state['stages']:self.state['stages'][-1].update(values)
 
     def execute(self):
-        from .recon import STAGES
+        from .workflow import Scheduler
         server,self.proxy_url=start_proxy(self.scope)
         threading.Thread(target=self.heartbeat,daemon=True).start()
         available=inventory(self.native_dir)
         self.state['inventory']=available
-        pipeline=self.config.get('tools',PROFILES[self.config['profile']])
-        self.state['pipeline']=pipeline
         try:
-            for tool in pipeline:
-                if tool in self.completed:
-                    self.state['stages'].append({**self.completed[tool],'reused':True});continue
-                budget=self.config.get('stage_budgets',{}).get(tool,self.config['stage_timeout'])
-                stage={'tool':tool,'status':'running','started':time.time(),'budget':budget}
-                self.state['stages'].append(stage);self.persist()
-                self.deadline=time.monotonic()+budget
-                try:
-                    self.check()
-                    if not available[tool]['ready']:
-                        stage.update(status='missing',error='Модуль или его данные не включены в сборку');continue
-                    if tool=='recon':builtin.run(self.scope,self.config,self.add,self.add_url,self.check)
-                    elif tool in STAGES:STAGES[tool](self)
-                    else:run_tool(self,tool)
-                    stage['status']='completed'
-                except Cancelled:
-                    stage['status']='cancelled';self.state['status']='cancelled';break
-                except StageTimeout:
-                    stage.update(status='timeout',error='Бюджет этапа исчерпан; частичные результаты сохранены. '
-                                 'Увеличьте «Секунд на этап» и нажмите «Продолжить».')
-                except (Exception,SystemExit) as exc:
-                    stage.update(status='error',error=self.redact(str(exc))[:1800]);self.log(tool,traceback.format_exc())
-                finally:
-                    stage['finished']=time.time();self.persist()
-            else:
-                self.state['status']='completed' if all(s['status']=='completed' for s in self.state['stages']) else 'partial'
+            Scheduler(self,available).execute()
         finally:
             self.done.set();server.shutdown();server.server_close()
             self.state['finished']=time.time();self.persist()

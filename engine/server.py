@@ -13,7 +13,7 @@ import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
 from .adapters import ROOT, inventory
-from .model import LABELS, PROFILES, VERSION, atomic_json, validate_config, public_config, plain
+from .model import LABELS, PROFILES, VERSION, atomic_json, validate_config, public_config, plain, secret_values
 from .reports import render_html, csv_report, sarif_report
 
 class Manager:
@@ -104,18 +104,32 @@ class Manager:
     def cancel(self, job):
         (self.path(job) / "cancel").touch()
 
+    def redact(self,job,text):
+        config=json.loads((self.path(job)/'config.json').read_text(encoding='utf-8'))
+        for secret in secret_values(config):
+            text=text.replace(secret,'[скрыто]').replace(json.dumps(secret,ensure_ascii=False)[1:-1],'[скрыто]')
+        return text
+
+    def logs(self,job,tool):
+        folder=self.path(job)
+        files=[folder/(tool+'.log')]+sorted((folder/'tasks').glob('**/'+tool+'.log'))
+        chunks=[]
+        for file in files:
+            if file.is_file():chunks.append(str(file.relative_to(folder))+'\n'+file.read_bytes()[-16000:].decode('utf-8','replace'))
+        return self.redact(job,plain('\n\n'.join(chunks)[-64000:] or 'Журнал пока пуст'))
+
     def export(self, job):
         output = io.BytesIO()
         folder = self.path(job)
         with zipfile.ZipFile(output, "w", zipfile.ZIP_DEFLATED) as z:
             report = self.report(job)
             config = json.loads((folder/'config.json').read_text(encoding='utf-8'))
-            for path in folder.iterdir():
-                if path.is_file() and path.suffix in ('.json','.jsonl','.log','.txt') and path.name != 'config.json':
+            for path in folder.rglob('*'):
+                relative=path.relative_to(folder)
+                if 'runtime' in relative.parts:continue
+                if path.is_file() and path.suffix in ('.json','.jsonl','.log','.txt') and path.name not in ('config.json','captured-requests.json'):
                     content = path.read_text(encoding='utf-8', errors='replace')
-                    for secret in config.get('headers',{}).values():
-                        if len(secret) >= 4: content = content.replace(secret, '[скрыто]')
-                    z.writestr(path.name, content)
+                    z.writestr(relative.as_posix(),self.redact(job,content))
             z.writestr('config.json', json.dumps(public_config(config), ensure_ascii=False, indent=2))
             z.writestr('report.html', render_html(report))
             z.writestr('findings.csv', csv_report(report))
@@ -157,8 +171,9 @@ def serve(manager):
             if not self.authorized(): self.reply(401, {"error": "Требуется локальная сессия"}); return
             try:
                 if path == "/api/info":
+                    from .catalog import CATEGORIES
                     self.reply(200, {"version": VERSION, "tools": inventory(manager.native_dir), "labels": LABELS,
-                                     "profiles": PROFILES, "platform": "android" if manager.native_dir else sys.platform})
+                                     "profiles": PROFILES, "categories":CATEGORIES,"platform": "android" if manager.native_dir else sys.platform})
                 elif path == "/api/jobs": self.reply(200, manager.list())
                 elif path.startswith("/api/job/"): self.reply(200, manager.report(path.rsplit("/", 1)[1]))
                 elif path.startswith("/api/export/"):
@@ -166,9 +181,7 @@ def serve(manager):
                 elif path.startswith("/api/log/"):
                     _, _, _, job, tool = path.split("/")
                     if tool not in LABELS: raise ValueError("Unknown tool")
-                    file = manager.path(job) / (tool + ".log")
-                    data = file.read_bytes()[-64000:].decode("utf-8", "replace") if file.exists() else "Журнал пока пуст"
-                    self.reply(200, {"text": plain(data)})
+                    self.reply(200, {"text": manager.logs(job,tool)})
                 else: self.reply(404, {"error": "Not found"})
             except (ValueError, OSError) as exc:
                 self.reply(400, {"error": str(exc)})
@@ -177,9 +190,13 @@ def serve(manager):
             if not self.authorized(): self.reply(401, {"error": "Требуется локальная сессия"}); return
             try:
                 length = int(self.headers.get("Content-Length", 0))
-                if not 0 < length <= 64000: raise ValueError("Некорректный размер запроса")
+                if not 0 < length <= 4*1024*1024: raise ValueError("Некорректный размер запроса")
                 data = json.loads(self.rfile.read(length))
                 if self.path == "/api/jobs": self.reply(201, {"id": manager.create(data)})
+                elif self.path=='/api/plan':
+                    from .templates import coverage,summary
+                    config=validate_config(data)
+                    self.reply(200,{'coverage':coverage(config),'catalog':summary()})
                 elif self.path.startswith("/api/resume/"):
                     self.reply(200, {"id":manager.resume(self.path.rsplit("/",1)[1],data.get('stage_timeout'))})
                 elif self.path.startswith("/api/cancel/"):
