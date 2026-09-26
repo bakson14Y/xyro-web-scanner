@@ -16,33 +16,10 @@ concurrency:
 jobs:
   engine:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     outputs:
       source_sha: ${{ steps.source.outputs.sha }}
     steps:
       - uses: actions/checkout@v4
-      - name: Import verified v1.5.2 runtime fixes
-        if: hashFiles('source-v1.5.2.zip') != '' && github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
-        env:
-          EXPECTED_SHA256: 1a56522501fd953e286464bf16ceb4765326c11e46d30e5c32e65b0f6ff119b9
-        run: |
-          python - <<'PYIMPORT'
-          import hashlib, os, pathlib, zipfile
-          source=pathlib.Path('source-v1.5.2.zip')
-          assert hashlib.sha256(source.read_bytes()).hexdigest()==os.environ['EXPECTED_SHA256'], 'Unexpected source archive'
-          with zipfile.ZipFile(source) as pack:
-              for item in pack.infolist():
-                  p=pathlib.PurePosixPath(item.filename)
-                  assert not p.is_absolute() and '..' not in p.parts and p.parts[0] not in ('.git','.github'), 'Unsafe archive path'
-              pack.extractall('.')
-          source.unlink()
-          PYIMPORT
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add -A
-          git commit -m 'Fix XYRO 1.5.2 runtime failures and resumable scans [skip ci]'
-          git push origin HEAD:main
       - id: source
         name: Record exact source revision
         run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
