@@ -15,38 +15,14 @@ concurrency:
   cancel-in-progress: true
 jobs:
   engine:
-    permissions:
-      contents: write
     runs-on: ubuntu-latest
     outputs:
       source_sha: ${{ steps.source.outputs.sha }}
     steps:
       - uses: actions/checkout@v4
       - id: source
-        name: Import reviewed XYRO 2.0 source and record revision
-        run: |
-          if [ -f xyro-v2-source.zip ]; then
-            python - <<'PYIMPORT'
-          from pathlib import Path
-          import hashlib,zipfile
-          archive=Path('xyro-v2-source.zip')
-          assert hashlib.sha256(archive.read_bytes()).hexdigest()=="3a12e0df8ed53bd7376056f881816ed692dabcc889e6ad35284c723efc41108f", 'Source archive mismatch'
-          allowed=['README.md', 'android/app/build.gradle', 'docs/architecture-v2.md', 'docs/release-v2.0.0.md', 'engine/adapters.py', 'engine/authchecks.py', 'engine/builtin.py', 'engine/catalog.py', 'engine/forms.py', 'engine/healthchecks.py', 'engine/model.py', 'engine/nuclei_runner.py', 'engine/osint.py', 'engine/recon.py', 'engine/reports.py', 'engine/server.py', 'engine/templates.py', 'engine/web/app.js', 'engine/web/index.html', 'engine/web/style.css', 'engine/worker.py', 'engine/workflow.py', 'licenses/certifi-CA-LICENSE', 'tests/test_v2.py', 'tools.lock.json', 'tools/archive_desktop.py', 'tools/build_native.py', 'tools/check_android.py', 'tools/patch_native.py', 'tools/patches/ca-bundle.pem', 'tools/patches/dalfox_tls.rs', 'tools/prepare_templates.py']
-          with zipfile.ZipFile(archive) as z:
-              assert set(z.namelist())==set(allowed), 'Unexpected archive file'
-              for name in allowed:
-                  path=Path(name)
-                  assert not path.is_absolute() and '..' not in path.parts and not name.startswith('.github/')
-              z.extractall('.')
-          archive.unlink()
-          PYIMPORT
-            git config user.name 'github-actions[bot]'
-            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-            git add --all
-            git commit -m 'Implement XYRO 2.0 workflow, DAST, TLS and Censys [skip ci]'
-            git push origin HEAD:main
-          fi
-          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+        name: Record exact source revision
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
