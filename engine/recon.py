@@ -113,8 +113,8 @@ def web_probe(run):
         run.asset('web',final,url=final,host=urlsplit(final).hostname,status=status,title=title,
                   technologies=tech,server=headers.get('server',''),content_type=headers.get('content-type',''),size=len(body))
         parser=builtin.Links();parser.feed(body)
-        for path in parser.urls:run.add_url(urljoin(final,path),source='html')
-        for path in re.findall(r'''["']((?:https?://|/)[^\s"'<>]{2,300})["']''',body):run.add_url(urljoin(final,path),source='js-inline')
+        for path in parser.urls:run.add_link(final,path,source='html')
+        for path in re.findall(r'''["']((?:https?://|/)[^\s"'<>]{2,300})["']''',body):run.add_link(final,path,source='js-inline')
         for name in re.findall(r'<(?:input|select|textarea)\b[^>]*\bname=["\']([^"\']+)',body,re.I):
             run.asset('parameter',final+'|'+name,url=final,name=name,source='html-form')
         if urlsplit(final).scheme=='https': tls_probe(run,final)
@@ -176,7 +176,7 @@ def discovery(run):
             run.asset('path',final,url=final,status=status,size=len(body),source='discovery')
             content_type=dict((k.lower(),v) for k,v in headers).get('content-type','')
             if path=='/robots.txt':
-                for value in re.findall(r'(?im)^(?:allow|disallow|sitemap):\s*(\S+)',body):run.add_url(urljoin(base,value),source='robots')
+                for value in re.findall(r'(?im)^(?:allow|disallow|sitemap):\s*(\S+)',body):run.add_link(base,value,source='robots')
             if 'xml' in content_type or path.endswith('.xml'):
                 try:
                     doc=ElementTree.fromstring(body)
@@ -187,7 +187,7 @@ def discovery(run):
                 try:
                     document=json.loads(body)
                     for endpoint in list(document.get('paths',{}))[:1000]:
-                        if isinstance(endpoint,str):run.add_url(urljoin(base,endpoint),source='openapi')
+                        if isinstance(endpoint,str):run.add_link(base,endpoint,source='openapi')
                     run.add(finding('discovery','Опубликовано описание API',final,'OpenAPI/Swagger содержит маршруты API',confidence='observed'))
                 except (ValueError,AttributeError):pass
         _parallel(run,paths,inspect)
@@ -198,6 +198,6 @@ def discovery(run):
         try:_,_,body,final=run.request(url,timeout=5)
         except (OSError,ValueError):continue
         for endpoint in re.findall(r'''["'`]((?:https?://|/)[^\s"'`<>]{2,250})["'`]''',body):
-            run.add_url(urljoin(final,endpoint),source='javascript')
+            run.add_link(final,endpoint,source='javascript')
 
 STAGES={'dns':dns_inventory,'ports':port_inventory,'webprobe':web_probe,'discovery':discovery}

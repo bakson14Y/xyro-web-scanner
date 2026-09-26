@@ -3,7 +3,7 @@ import ssl
 import time
 from html.parser import HTMLParser
 from urllib.parse import urljoin, urlsplit
-from .model import finding
+from .model import finding, safe_join
 
 class RedirectOutsideScope(ValueError):
     """A valid response whose redirect destination has not been authorized."""
@@ -39,9 +39,9 @@ def request(scope, url, timeout=10, headers=None, method='GET'):
             if response.status in (301, 302, 303, 307, 308):
                 location = response.getheader("Location")
                 if location:
-                    destination = urljoin(url, location)
-                    if not scope.contains(destination):
-                        raise RedirectOutsideScope(url, destination, response.status)
+                    destination = safe_join(url, location)
+                    if not destination or not scope.contains(destination):
+                        raise RedirectOutsideScope(url, destination or location, response.status)
                     url = scope.require(destination)
                     continue
             return response.status, response_headers, body, url
@@ -93,8 +93,8 @@ def run(scope, config, add, add_url, check):
             parser = Links()
             parser.feed(body)
             for item in parser.urls:
-                candidate = urljoin(final, item)
-                if scope.contains(candidate):
+                candidate = safe_join(final, item)
+                if candidate and scope.contains(candidate):
                     add_url(candidate)
                     # Do not automatically submit forms or invoke obvious state-changing routes.
                     if len(pending) < config["max_urls"] and not any(x in candidate.lower() for x in ("logout", "delete", "remove", "signout")):

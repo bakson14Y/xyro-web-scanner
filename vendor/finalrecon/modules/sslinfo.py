@@ -77,11 +77,11 @@ def cert(hostname, sslp, output, data):
         ctx = ssl.create_default_context()
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
-        sock = socket.socket()
-        sock.settimeout(5)
-        ssl_conn = ctx.wrap_socket(sock, server_hostname=hostname)
-        ssl_conn.connect((hostname, sslp))
-        x509_cert = ssl_conn.getpeercert(binary_form=True)
+        # XYRO: close the TLS socket on success and on handshake/read errors.
+        with socket.create_connection((hostname, sslp), timeout=5) as sock:
+            with ctx.wrap_socket(sock, server_hostname=hostname) as ssl_conn:
+                x509_cert = ssl_conn.getpeercert(binary_form=True)
+                protocol, cipher = ssl_conn.version(), ssl_conn.cipher()
         decoded_cert = x509.load_der_x509_certificate(x509_cert, default_backend())
 
         subject_dict = {}
@@ -112,11 +112,11 @@ def cert(hostname, sslp, output, data):
             not_after = decoded_cert.not_valid_after.replace(tzinfo=timezone.utc)
 
         cert_dict = {
-            "protocol": ssl_conn.version(),
-            "cipher": ssl_conn.cipher(),
+            "protocol": protocol,
+            "cipher": cipher,
             "subject": subject_dict,
             "issuer": issuer_dict,
-            "version": decoded_cert.version,
+            "version": decoded_cert.version.name,
             "serialNumber": decoded_cert.serial_number,
             "notBefore": not_before.strftime("%b %d %H:%M:%S %Y GMT"),
             "notAfter": not_after.strftime("%b %d %H:%M:%S %Y GMT"),

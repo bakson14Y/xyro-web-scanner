@@ -69,7 +69,10 @@ def pout(cause, url, misc="", noisymsg=False):
     dup_check = cause + "__" + re.sub(r"http[s]?://(www\.)?", "", url) + misc
     if dup_check not in duplicate_preventer:
         duplicate_preventer.append(dup_check)
-        if args.json:
+        if args.jsonl:
+            # XYRO: persist each finding before a later detector can time out.
+            print(json.dumps({"cause": cause, "url": url, "misc": misc}), flush=True)
+        elif args.json:
             json_out.append({"cause": cause, "url": url, "misc": misc})
         elif misc:
             print(f"[{cause}] {url} {misc}")
@@ -988,6 +991,8 @@ parser.add_argument("-p", "--path", default="", action="store", type=str,
                     help="Base path on server (scans root dir by default)")
 parser.add_argument("-j", "--json", action="store_true",
                     help="Produce JSON output")
+parser.add_argument("--jsonl", action="store_true",
+                    help="Produce one JSON finding per line immediately")
 parser.add_argument("-d", "--debug", action="store_true",
                     help="Show detailed debugging info")
 args = parser.parse_args()

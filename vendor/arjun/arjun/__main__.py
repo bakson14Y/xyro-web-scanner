@@ -102,14 +102,15 @@ def narrower(request, factors, param_groups):
     returns list
     """
     anomalous_params = []
-    threadpool = ThreadPoolExecutor(max_workers=mem.var['threads'])
-    futures = (threadpool.submit(bruter, request, factors, params) for params in param_groups)
-    for i, result in enumerate(as_completed(futures)):
-        if result.result():
-            anomalous_params.extend(slicer(result.result()))
-        if mem.var['kill']:
-            return anomalous_params
-        print('%s Processing chunks: %i/%-6i' % (info, i + 1, len(param_groups)), end='\r')
+    # XYRO: join workers before restoring per-tool networking hooks on timeout.
+    with ThreadPoolExecutor(max_workers=mem.var['threads']) as threadpool:
+        futures = (threadpool.submit(bruter, request, factors, params) for params in param_groups)
+        for i, result in enumerate(as_completed(futures)):
+            if result.result():
+                anomalous_params.extend(slicer(result.result()))
+            if mem.var['kill']:
+                return anomalous_params
+            print('%s Processing chunks: %i/%-6i' % (info, i + 1, len(param_groups)), end='\r')
     return anomalous_params
 
 
@@ -196,6 +197,7 @@ def main():
 
     final_result = {}
     is_single = False if args.import_file else True
+    completed = True
 
     try:
         mem.var['kill'] = False
@@ -208,6 +210,7 @@ def main():
             mem.var['kill'] = False
             mem.var['bad_req_count'] = 0
             if these_params == 'skipped':
+                completed = False
                 print('%s Skipped %s due to errors' % (bad, url))
             elif these_params:
                 final_result[url] = {}
@@ -223,7 +226,8 @@ def main():
                 print('%s No parameters were discovered.\n' % info)
     except KeyboardInterrupt:
         exit()
+    return completed
 
 
 if __name__ == '__main__':
-    main()
+    xyro_completed = main()

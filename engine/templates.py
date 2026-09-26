@@ -35,7 +35,8 @@ def materialize(cache_dir):
     m=manifest()
     if not m.get('count'): raise FileNotFoundError('Шаблоны Nuclei не включены в сборку')
     root=Path(cache_dir)/('nuclei-templates-'+m['commit'][:12])
-    if (root/'.complete').is_file():return root
+    marker=root/'.complete'
+    if marker.is_file() and marker.read_text(encoding='utf-8')==m['archive_sha256'] and (root/'.nuclei-ignore').is_file():return root
     pack=DATA/'nuclei-templates.zip'
     if hashlib.sha256(pack.read_bytes()).hexdigest()!=m['archive_sha256']:
         raise ValueError('Нарушена контрольная сумма архива Nuclei')
@@ -47,3 +48,21 @@ def materialize(cache_dir):
         archive.extractall(root)
     (root/'.complete').write_text(m['archive_sha256'],encoding='utf-8')
     return root
+
+def configure(cache_dir, root):
+    """Install the pinned upstream ignore policy before Nuclei starts offline."""
+    from .model import atomic_json
+    m=manifest()
+    content=(Path(root)/'.nuclei-ignore').read_bytes()
+    if hashlib.sha256(content).hexdigest()!=m['ignore_sha256']:
+        raise ValueError('Нарушена контрольная сумма .nuclei-ignore')
+    config=Path(cache_dir)/'nuclei-config'
+    config.mkdir(parents=True,exist_ok=True)
+    temp=config/'.nuclei-ignore.tmp'
+    temp.write_bytes(content)
+    temp.replace(config/'.nuclei-ignore')
+    atomic_json(config/'.templates-config.json',{
+        'nuclei-templates-directory':str(root),
+        'nuclei-templates-version':'v'+m['upstream_release']+'-xyro.'+m['snapshot_date'].replace('-',''),
+    })
+    return config

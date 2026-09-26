@@ -13,7 +13,9 @@ from .proxy import start as start_proxy
 from . import builtin
 
 def run(native_dir=""):
+    from .healthchecks import run as regression_checks
     result = {"inventory": inventory(native_dir), "native": {}, "python": {}, "http": False}
+    result['regressions']=regression_checks(native_dir)
     for name in NATIVE_TOOLS:
         flag = "--help" if name in ("gau", "dalfox") else "-h"
         try:
@@ -104,6 +106,7 @@ def run(native_dir=""):
                         if log.exists(): probe["log"] = log.read_text(encoding="utf-8", errors="replace")[-2500:]
                     result["probes"][name] = probe
                 result["nuclei_positive"] = any(f.get("template_id") == "git-config" for f in worker.findings)
+                result['nuclei_ignore_clean']='nuclei-ignore' not in (worker.folder/'nuclei.log').read_text(encoding='utf-8',errors='replace')
                 exposed[0] = False
                 worker.findings.clear(); worker.ids.clear()
                 for old in Path(folder).glob("nuclei-*.jsonl"): old.unlink()
@@ -120,10 +123,12 @@ def run(native_dir=""):
                 proxy.shutdown(); proxy.server_close()
     finally: site.shutdown(); site.server_close()
     result["ok"] = (all(t["ready"] for t in result["inventory"].values())
+                    and all(t is True for t in result['regressions'].values())
                     and len(result["native"]) == len(NATIVE_TOOLS)
                     and all(t.get("code") == 0 and t.get("bytes",0)>0 for t in result["native"].values())
                     and all(t is True for t in result["python"].values()) and result["http"]
                     and result.get('redirect_headers') is True and result.get('redirect_scope') is True
                     and result.get("nuclei_positive") is True and result.get("nuclei_negative") is True
+                    and result.get('nuclei_ignore_clean') is True
                     and all(t["status"] != "error" and t["requests"] > 0 for t in result["probes"].values()))
     return result

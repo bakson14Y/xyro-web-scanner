@@ -28,7 +28,10 @@ def run_script(path):
     path = Path(path)
     namespace = {"__name__": "__main__", "__file__": str(path),
                  "__package__": None, "__spec__": None}
-    exec(compile(path.read_bytes(), str(path), "exec"), namespace)
+    try: exec(compile(path.read_bytes(), str(path), "exec"), namespace)
+    finally:
+        pool=namespace.get('pool')
+        if pool is not None and hasattr(pool,'clear'):pool.clear()
 
 def binary(name, native_dir=""):
     candidates = ([Path(native_dir) / ("lib" + name + ".so")] if native_dir else [])
@@ -94,13 +97,22 @@ def python_context(run, tool, argv):
     original_normalizable = getattr(urllib3.util.url, "NORMALIZABLE_SCHEMES", None)
     network_lock = threading.Lock()
     last_request = [0.0]
+    blocked = set()
     def guarded(pool, method, url, *args, **kwargs):
         absolute = url if str(url).startswith(("http://", "https://")) else (
             ("https" if isinstance(pool, urllib3.connectionpool.HTTPSConnectionPool) else "http")
             + "://" + ("[" + pool.host + "]" if ":" in pool.host else pool.host)
             + ":" + str(pool.port or (443 if isinstance(pool, urllib3.connectionpool.HTTPSConnectionPool) else 80)) + url)
-        run.scope.require(absolute)
         run.check()
+        try: run.scope.require(absolute)
+        except ValueError:
+            if tool != 'snallygaster': raise
+            if absolute not in blocked:
+                blocked.add(absolute)
+                run.log(tool, 'Пропуск вне области: '+absolute)
+            # Snallygaster handles urllib3 network errors per detector; a plain
+            # ValueError aborts its entire suite on hard-coded service ports.
+            raise urllib3.exceptions.HTTPError('Вне заданной области: '+absolute) from None
         with network_lock:
             wait = 1 / run.config["rps"] - (time.monotonic() - last_request[0])
             if wait > 0: time.sleep(wait)
@@ -241,12 +253,14 @@ def run_tool(run, tool):
                 for line in file.read_text(encoding="utf-8", errors="replace").splitlines(): run.add_url(line.strip())
     elif tool == "katana":
         seeds = run.folder / "seeds.txt"
-        seeds.write_text("\n".join(run.urls), encoding="utf-8")
+        # A seed starts a whole crawl: do not re-crawl every URL found by gau.
+        seeds.write_text("\n".join(run.scope.targets), encoding="utf-8")
         file = run.folder / (tool + ".log")
         try:
             native(run, tool, ["-list", str(seeds), "-d", str(c["depth"]), "-jc", "-fx", "-j",
-                "-silent", "-duc", "-dr", "-c", "2", "-p", "1", "-rl", str(c["rps"]),
-                "-timeout", "10", "-ct", str(c["stage_timeout"]), "-proxy", run.proxy_url,
+                "-silent", "-duc", "-dr", "-c", str(c.get('concurrency',3)), "-p", "1", "-rl", str(c["rps"]),
+                "-retry", "0", "-s", "breadth-first", "-iqp", "-mdp", str(c['max_urls']),
+                "-timeout", "10", "-proxy", run.proxy_url,
                 "-cs", run.scope.regex(), "-ob", "-or"])
         finally:
             if file.exists():
@@ -296,24 +310,7 @@ def run_tool(run, tool):
                 if incomplete:
                     raise RuntimeError("Dalfox сообщил incomplete; результаты этапа частичные")
     elif tool == "arjun":
-        seen = set()
-        for candidate in sorted(list(run.urls), key=lambda u: not bool(urlsplit(u).query)):
-            u = urlsplit(candidate)
-            route = urlunsplit((u.scheme, u.netloc, u.path, "", ""))
-            if route in seen: continue
-            seen.add(route)
-            output = run.folder / ("arjun-" + str(len(seen)) + ".json")
-            with python_context(run, tool, ["-u", route, "-oJ", str(output), "-t", "1", "-T", "10",
-                                           "--rate-limit", str(c["rps"]), "--disable-redirects"]):
-                try: runpy.run_module("arjun.__main__", run_name="__main__")
-                except SystemExit as exc:
-                    if exc.code not in (None, 0): raise RuntimeError("arjun: " + str(exc.code))
-            if output.exists():
-                data = json.loads(output.read_text(encoding="utf-8"))
-                for target, item in data.items():
-                    names = item.get("params", [])
-                    run.add(finding(tool, "HTTP-параметры", target, ", ".join(names), confidence="tool-reported"))
-                    run.add_url(target + "?" + urlencode({name: "xyro" for name in names}))
+        arjun(run)
     elif tool == "ghauri":
         for candidate in sorted(list(run.urls), key=lambda u: not bool(urlsplit(u).query)):
             if not urlsplit(candidate).query: continue
@@ -331,17 +328,19 @@ def run_tool(run, tool):
                 if re.search(r"(?:is injectable|confirmed.*inject|appears to be.*injectable)", line, re.I):
                     run.add(finding(tool, "Возможная SQL-инъекция", url, line, "high"))
     elif tool == "snallygaster":
-        argv = [p.netloc, "--nowww", "--json", "--nohttp" if p.scheme == "https" else "--nohttps"]
-        with python_context(run, tool, argv):
-            try: run_script(ROOT / "vendor" / tool / "snallygaster")
-            except SystemExit as exc:
-                if exc.code not in (None, 0): raise RuntimeError("snallygaster: " + str(exc.code))
+        argv = [p.netloc, "--nowww", "--jsonl", "--nohttp" if p.scheme == "https" else "--nohttps"]
         log = run.folder / "snallygaster.log"
-        if log.exists():
-            for row in json_objects(log):
-                target = row.get("url", url)
-                if run.scope.contains(target):
-                    run.add(finding(tool, row.get("cause", "Открытый файл"), target, row.get("misc", "Ответил детектор snallygaster"), "medium"))
+        try:
+            with python_context(run, tool, argv):
+                try: run_script(ROOT / "vendor" / tool / "snallygaster")
+                except SystemExit as exc:
+                    if exc.code not in (None, 0): raise RuntimeError("snallygaster: " + str(exc.code))
+        finally:
+            if log.exists():
+                for row in json_objects(log):
+                    target = row.get("url", url)
+                    if run.scope.contains(target):
+                        run.add(finding(tool, row.get("cause", "Открытый файл"), target, row.get("misc", "Ответил детектор snallygaster"), "medium"))
     elif tool == "finalrecon":
         with python_context(run, tool, []):
             settings = types.ModuleType("settings")
@@ -367,11 +366,61 @@ def run_tool(run, tool):
                         errors.append(check.__name__ + ": " + str(exc))
             finally:
                 for name, value in data.items():
-                    run.add(finding(tool, name, url, json.dumps(value, ensure_ascii=False), confidence="observed"))
+                    run.add(finding(tool, name, url, json.dumps(value, ensure_ascii=False, default=str), confidence="observed"))
             if errors: raise RuntimeError("; ".join(errors))
     else:
         raise ValueError("Unknown tool: " + tool)
 
+
+STATIC_SUFFIXES = {'.css','.js','.mjs','.cjs','.map','.ico','.png','.jpg','.jpeg','.gif','.webp','.svg',
+                   '.woff','.woff2','.ttf','.eot','.mp3','.mp4','.webm','.pdf','.zip','.gz','.br'}
+
+def parameter_targets(run):
+    routes=[]
+    candidates=sorted(run.urls, key=lambda u: (not bool(urlsplit(u).query), u not in run.scope.targets))
+    for candidate in candidates:
+        u=urlsplit(candidate)
+        if Path(u.path).suffix.lower() in STATIC_SUFFIXES:continue
+        route=urlunsplit((u.scheme,u.netloc,u.path,'',''))
+        if run.scope.contains(route) and route not in routes:routes.append(route)
+    return routes
+
+def arjun(run):
+    routes=parameter_targets(run)
+    checkpoint=run.folder/'arjun-progress.json'
+    completed=set()
+    if run.config.get('_resume') and checkpoint.exists():
+        completed=set(json.loads(checkpoint.read_text(encoding='utf-8')).get('completed',[]))
+    completed.intersection_update(routes)
+    errors=[]
+    run.progress(targets_total=len(routes),targets_done=len(completed))
+    for route in routes:
+        if route in completed:continue
+        run.check()
+        output=run.folder/('arjun-'+__import__('hashlib').sha256(route.encode()).hexdigest()[:16]+'.json')
+        namespace={}
+        run.progress(current_target=route)
+        run.log('arjun',f'Адрес {len(completed)+1}/{len(routes)}: {route}')
+        try:
+            with python_context(run, 'arjun', ['-u',route,'-oJ',str(output),'-t','1','-T','10',
+                                              '--rate-limit',str(run.config['rps']),'--disable-redirects']):
+                namespace=runpy.run_module('arjun.__main__',run_name='__main__')
+        finally:
+            if output.exists():
+                for target,item in json.loads(output.read_text(encoding='utf-8')).items():
+                    if not run.scope.contains(target):continue
+                    names=item.get('params',[])
+                    run.add(finding('arjun','HTTP-параметры',target,', '.join(names),confidence='tool-reported'))
+                    run.add_url(target+'?'+urlencode({name:'xyro' for name in names}))
+            run.persist()
+        if namespace.get('xyro_completed'):
+            completed.add(route)
+            atomic_json(checkpoint,{'completed':sorted(completed)})
+        else:errors.append(route)
+        run.progress(targets_done=len(completed),targets_failed=len(errors))
+        run.persist()
+    if errors:raise RuntimeError(f'Arjun не завершил {len(errors)} адресов; результаты остальных сохранены. '
+                                'Причина в журнале; продолжение повторит незавершённые адреса.')
 
 def nuclei(run):
     from . import templates
@@ -380,6 +429,7 @@ def nuclei(run):
     if not selected:
         run.progress(templates_total=0,templates_done=0,detail='Нет шаблонов для выбранных фильтров');return
     root=templates.materialize(runtime_dir(run))
+    templates.configure(runtime_dir(run), root)
     checkpoint=run.folder/'nuclei-progress.json'
     completed=set()
     if config.get('_resume') and checkpoint.exists():
@@ -389,6 +439,8 @@ def nuclei(run):
     seeds=run.folder/'nuclei-targets.txt';seeds.write_text('\n'.join(targets),encoding='utf-8')
     pending=[row for row in selected if row['id'] not in completed]
     run.progress(templates_total=len(selected),templates_done=len(completed.intersection(r['id'] for r in selected)))
+    run.log('nuclei',f'Встроенная база: {templates.manifest()["commit"][:12]}; выбрано {len(selected)} шаблонов. '
+                    f'Завершено ранее: {len(completed.intersection(r["id"] for r in selected))}.')
     def consume(result):
         if not result.exists():return
         for row in json_objects(result):
@@ -408,10 +460,11 @@ def nuclei(run):
     for offset in range(0,len(pending),64):
         run.check()
         batch=pending[offset:offset+64]
+        run.log('nuclei',f'Пакет {offset//64+1}/{math.ceil(len(pending)/64)}: {len(batch)} шаблонов')
         fingerprint=__import__('hashlib').sha256('\n'.join(r['id'] for r in batch).encode()).hexdigest()[:16]
         result=run.folder/('nuclei-'+fingerprint+'.jsonl')
         args=['-l',str(seeds),'-t',','.join(str(root/r['path']) for r in batch),
-              '-jle',str(result),'-nc','-duc','-ni','-dut','-pt','http','-dr','-nh','-no-stdin',
+              '-jle',str(result),'-nc','-silent','-duc','-ni','-dut','-pt','http','-dr','-nh','-no-stdin',
               '-or','-ot','-c',str(config.get('concurrency',3)),'-bs','1','-pc','1',
               '-rl',str(config['rps']),'-timeout','8','-retries','0','-rsr','1048576','-p',run.proxy_url]
         try:native(run,'nuclei',args,append=True,extra_env={'NUCLEI_TEMPLATES_DIR':str(root)})
@@ -419,6 +472,7 @@ def nuclei(run):
         completed.update(r['id'] for r in batch)
         atomic_json(checkpoint,{'completed':sorted(completed),'snapshot':templates.manifest()['commit']})
         run.progress(templates_done=len(completed.intersection(r['id'] for r in selected)))
+        run.log('nuclei',f'Пакет завершён; всего {len(completed.intersection(r["id"] for r in selected))}/{len(selected)} шаблонов')
         run.persist()
 
 

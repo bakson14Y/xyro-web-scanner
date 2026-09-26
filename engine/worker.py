@@ -8,7 +8,7 @@ import traceback
 from urllib.parse import urlsplit, parse_qsl
 from . import builtin
 from .adapters import inventory, run_tool
-from .model import Scope, PROFILES, VERSION, atomic_json, canonical_url, plain, public_config
+from .model import Scope, PROFILES, VERSION, atomic_json, canonical_url, plain, public_config, safe_join
 from .proxy import start as start_proxy
 
 class Cancelled(BaseException): pass
@@ -100,6 +100,10 @@ class Run:
                 for key,_ in parse_qsl(urlsplit(value).query,keep_blank_values=True):
                     self.asset('parameter',value.split('?')[0]+'|'+key,url=value.split('?')[0],name=key,source='query')
 
+    def add_link(self,base,reference,source='tool'):
+        url=safe_join(base,reference)
+        if url:self.add_url(url,source=source)
+
     def redact(self,text):
         text=plain(text)
         for value in self.config.get('headers',{}).values():
@@ -149,7 +153,8 @@ class Run:
                 except Cancelled:
                     stage['status']='cancelled';self.state['status']='cancelled';break
                 except StageTimeout:
-                    stage.update(status='timeout',error='Бюджет этапа исчерпан; частичные результаты сохранены')
+                    stage.update(status='timeout',error='Бюджет этапа исчерпан; частичные результаты сохранены. '
+                                 'Увеличьте «Секунд на этап» и нажмите «Продолжить».')
                 except (Exception,SystemExit) as exc:
                     stage.update(status='error',error=self.redact(str(exc))[:1800]);self.log(tool,traceback.format_exc())
                 finally:

@@ -13,7 +13,7 @@ import zipfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
 from .adapters import ROOT, inventory
-from .model import LABELS, PROFILES, VERSION, atomic_json, validate_config, public_config
+from .model import LABELS, PROFILES, VERSION, atomic_json, validate_config, public_config, plain
 from .reports import render_html, csv_report, sarif_report
 
 class Manager:
@@ -75,7 +75,7 @@ class Manager:
                 raise
             return job
 
-    def resume(self, job):
+    def resume(self, job, stage_timeout=None):
         with self.mutex:
             if any(x["status"] in ("running", "queued") for x in self.list()):
                 raise ValueError("Дождитесь завершения активной проверки")
@@ -84,10 +84,12 @@ class Manager:
             if report["status"] not in ("partial", "cancelled", "interrupted", "error"):
                 raise ValueError("Продолжение доступно для незавершённых проверок")
             config = json.loads((folder/"config.json").read_text(encoding="utf-8"))
+            if stage_timeout is not None:
+                config = validate_config({**config, 'stage_timeout':stage_timeout})
             config["_resume"] = True
             atomic_json(folder/"config.json", config)
             (folder/"cancel").unlink(missing_ok=True)
-            report.update(status="queued", heartbeat=time.time())
+            report.update(status="queued", heartbeat=time.time(), config=public_config(config))
             atomic_json(folder/"report.json", report)
             try:
                 if self.launcher: self.launcher(str(folder), self.native_dir)
@@ -166,7 +168,7 @@ def serve(manager):
                     if tool not in LABELS: raise ValueError("Unknown tool")
                     file = manager.path(job) / (tool + ".log")
                     data = file.read_bytes()[-64000:].decode("utf-8", "replace") if file.exists() else "Журнал пока пуст"
-                    self.reply(200, {"text": data})
+                    self.reply(200, {"text": plain(data)})
                 else: self.reply(404, {"error": "Not found"})
             except (ValueError, OSError) as exc:
                 self.reply(400, {"error": str(exc)})
@@ -179,7 +181,7 @@ def serve(manager):
                 data = json.loads(self.rfile.read(length))
                 if self.path == "/api/jobs": self.reply(201, {"id": manager.create(data)})
                 elif self.path.startswith("/api/resume/"):
-                    self.reply(200, {"id":manager.resume(self.path.rsplit("/",1)[1])})
+                    self.reply(200, {"id":manager.resume(self.path.rsplit("/",1)[1],data.get('stage_timeout'))})
                 elif self.path.startswith("/api/cancel/"):
                     manager.cancel(self.path.rsplit("/", 1)[1]); self.reply(200, {"ok": True})
                 else: self.reply(404, {"error": "Not found"})

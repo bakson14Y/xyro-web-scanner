@@ -4,9 +4,9 @@ import json
 import re
 import time
 from pathlib import Path
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import urljoin, urlsplit, urlunsplit
 
-VERSION = '1.5.1'
+VERSION = '1.5.2'
 TOOLS = ('recon', 'subfinder', 'dns', 'ports', 'webprobe', 'gau', 'katana', 'discovery', 'cariddi', 'finalrecon', 'snallygaster', 'arjun', 'nuclei', 'dalfox', 'ghauri')
 PROFILES = {
     'quick': ('recon', 'dns', 'webprobe', 'nuclei'),
@@ -43,6 +43,12 @@ def canonical_url(value):
 def origin(url):
     p = urlsplit(canonical_url(url))
     return p.scheme, p.hostname, p.port or (443 if p.scheme == 'https' else 80)
+
+def safe_join(base, reference):
+    """Treat extracted HTML/JS/robots strings as untrusted URL candidates."""
+    if not isinstance(reference, str): return None
+    try: return canonical_url(urljoin(base, reference))
+    except (ValueError, UnicodeError): return None
 
 def host_url(scheme, host, port):
     return canonical_url(f'{scheme}://{"["+host+"]" if ":" in host else host}:{port}/')

@@ -22,6 +22,10 @@ def main():
     if subprocess.check_output(['git','rev-parse','HEAD'],cwd=src,text=True).strip()!=lock['commit']:
         raise RuntimeError('Template revision mismatch')
     entries, excluded = [], {}
+    ignore_file=src/'.nuclei-ignore'
+    ignore=yaml.safe_load(ignore_file.read_text(encoding='utf-8'))
+    ignored_tags=set(ignore.get('tags',[]))
+    ignored_files=set(ignore.get('files',[]))
     for path in sorted((src/'http').rglob('*.yaml')):
         try:
             text = path.read_text(encoding='utf-8')
@@ -32,6 +36,7 @@ def main():
             reason = ('excluded group' if path.relative_to(src).parts[1] == 'credential-stuffing' else
                       'protocol' if DISALLOWED_PROTOCOLS.intersection(doc) or doc.get('self-contained') else
                       'excluded tag' if EXCLUDED_TAGS.intersection(tags) else
+                      'upstream ignore' if ignored_tags.intersection(tags) or path.relative_to(src).as_posix() in ignored_files else
                       'external callback' if 'interactsh-' in text or 'interactsh_' in text else
                       'unsigned' if '# digest:' not in text else '')
             if reason:
@@ -46,6 +51,7 @@ def main():
     destination=ROOT/'engine/data';destination.mkdir(parents=True,exist_ok=True)
     pack=destination/'nuclei-templates.zip'
     with zipfile.ZipFile(pack,'w',zipfile.ZIP_DEFLATED,compresslevel=6) as archive:
+        archive.write(ignore_file,'.nuclei-ignore')
         selected={e['path'] for e in entries}
         for path in sorted((src/'http').rglob('*')):
             if path.is_file() and (path.relative_to(src).as_posix() in selected or path.suffix!='.yaml'):
@@ -57,6 +63,7 @@ def main():
                     if item.is_file():archive.write(item,item.relative_to(src).as_posix())
             elif path.is_file():archive.write(path,name)
     manifest={**lock,'count':len(entries),'excluded':excluded,'templates':entries,
+              'ignore_sha256':hashlib.sha256(ignore_file.read_bytes()).hexdigest(),
               'archive_sha256':hashlib.sha256(pack.read_bytes()).hexdigest()}
     (destination/'nuclei-manifest.json').write_text(json.dumps(manifest,ensure_ascii=False),encoding='utf-8')
     for source,name in ((src/'LICENSE.md','nuclei-templates-LICENSE.md'),(ROOT/'build/upstream/nuclei/LICENSE.md','nuclei-LICENSE.md')):
