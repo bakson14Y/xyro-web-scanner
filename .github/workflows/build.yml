@@ -1,4 +1,4 @@
-name: Build, verify and release XYRO 1.5
+name: Build, verify and release XYRO 2.0
 on:
   push:
     branches: [main, master]
@@ -15,14 +15,38 @@ concurrency:
   cancel-in-progress: true
 jobs:
   engine:
+    permissions:
+      contents: write
     runs-on: ubuntu-latest
     outputs:
       source_sha: ${{ steps.source.outputs.sha }}
     steps:
       - uses: actions/checkout@v4
       - id: source
-        name: Record exact source revision
-        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+        name: Import reviewed XYRO 2.0 source and record revision
+        run: |
+          if [ -f xyro-v2-source.zip ]; then
+            python - <<'PYIMPORT'
+          from pathlib import Path
+          import hashlib,zipfile
+          archive=Path('xyro-v2-source.zip')
+          assert hashlib.sha256(archive.read_bytes()).hexdigest()=="3a12e0df8ed53bd7376056f881816ed692dabcc889e6ad35284c723efc41108f", 'Source archive mismatch'
+          allowed=['README.md', 'android/app/build.gradle', 'docs/architecture-v2.md', 'docs/release-v2.0.0.md', 'engine/adapters.py', 'engine/authchecks.py', 'engine/builtin.py', 'engine/catalog.py', 'engine/forms.py', 'engine/healthchecks.py', 'engine/model.py', 'engine/nuclei_runner.py', 'engine/osint.py', 'engine/recon.py', 'engine/reports.py', 'engine/server.py', 'engine/templates.py', 'engine/web/app.js', 'engine/web/index.html', 'engine/web/style.css', 'engine/worker.py', 'engine/workflow.py', 'licenses/certifi-CA-LICENSE', 'tests/test_v2.py', 'tools.lock.json', 'tools/archive_desktop.py', 'tools/build_native.py', 'tools/check_android.py', 'tools/patch_native.py', 'tools/patches/ca-bundle.pem', 'tools/patches/dalfox_tls.rs', 'tools/prepare_templates.py']
+          with zipfile.ZipFile(archive) as z:
+              assert set(z.namelist())==set(allowed), 'Unexpected archive file'
+              for name in allowed:
+                  path=Path(name)
+                  assert not path.is_absolute() and '..' not in path.parts and not name.startswith('.github/')
+              z.extractall('.')
+          archive.unlink()
+          PYIMPORT
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git add --all
+            git commit -m 'Implement XYRO 2.0 workflow, DAST, TLS and Censys [skip ci]'
+            git push origin HEAD:main
+          fi
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
@@ -63,14 +87,14 @@ jobs:
         id: native-cache
         with:
           path: bin/
-          key: native-v1-${{ runner.os }}-${{ hashFiles('tools.lock.json', 'tools/build_native.py') }}
+          key: native-v2-${{ runner.os }}-${{ hashFiles('tools.lock.json', 'tools/build_native.py', 'tools/patch_native.py', 'tools/patches/**') }}
       - run: python tools/build_native.py
         if: steps.native-cache.outputs.cache-hit != 'true'
       - uses: actions/cache/save@v4
         if: steps.native-cache.outputs.cache-hit != 'true'
         with:
           path: bin/
-          key: native-v1-${{ runner.os }}-${{ hashFiles('tools.lock.json', 'tools/build_native.py') }}
+          key: native-v2-${{ runner.os }}-${{ hashFiles('tools.lock.json', 'tools/build_native.py', 'tools/patch_native.py', 'tools/patches/**') }}
       - uses: actions/download-artifact@v4
         with:
           name: pinned-nuclei-templates
@@ -119,7 +143,7 @@ jobs:
         id: native-cache
         with:
           path: android/app/src/main/jniLibs/${{ matrix.abi }}/
-          key: native-v1-android-${{ matrix.abi }}-${{ hashFiles('tools.lock.json', 'tools/build_native.py') }}
+          key: native-v2-android-${{ matrix.abi }}-${{ hashFiles('tools.lock.json', 'tools/build_native.py', 'tools/patch_native.py', 'tools/patches/**') }}
       - name: Build Android executables
         if: steps.native-cache.outputs.cache-hit != 'true'
         run: python tools/build_native.py --android "${{ matrix.abi }}" --ndk "$ANDROID_HOME/ndk/28.2.13676358"
@@ -127,7 +151,7 @@ jobs:
         if: steps.native-cache.outputs.cache-hit != 'true'
         with:
           path: android/app/src/main/jniLibs/${{ matrix.abi }}/
-          key: native-v1-android-${{ matrix.abi }}-${{ hashFiles('tools.lock.json', 'tools/build_native.py') }}
+          key: native-v2-android-${{ matrix.abi }}-${{ hashFiles('tools.lock.json', 'tools/build_native.py', 'tools/patch_native.py', 'tools/patches/**') }}
       - uses: actions/upload-artifact@v4
         with:
           name: native-${{ matrix.abi }}
@@ -188,7 +212,7 @@ jobs:
       - name: Name APK and calculate checksum
         run: |
           mkdir -p dist
-          cp android/app/build/outputs/apk/debug/app-debug.apk dist/XYRO-1.5.2-Android.apk
+          cp android/app/build/outputs/apk/debug/app-debug.apk dist/XYRO-2.0.0-Android.apk
       - uses: actions/upload-artifact@v4
         with:
           name: release-Android
@@ -225,7 +249,7 @@ jobs:
           from pathlib import Path
           import hashlib
           root=Path('release-assets')
-          expected={'XYRO-1.5.2-Android.apk','XYRO-1.5.2-Windows-x64.zip','XYRO-1.5.2-Linux-x64.tar.gz'}
+          expected={'XYRO-2.0.0-Android.apk','XYRO-2.0.0-Windows-x64.zip','XYRO-2.0.0-Linux-x64.tar.gz'}
           assert {p.name for p in root.iterdir()}==expected, 'Unexpected or missing release asset'
           lines=[]
           for p in sorted(root.iterdir()):
@@ -238,8 +262,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           SOURCE_SHA: ${{ needs.engine.outputs.source_sha }}
         run: |
-          if gh release view v1.5.2 >/dev/null 2>&1; then
-            echo 'v1.5.2 already exists; published assets are preserved.'
+          if gh release view v2.0.0 >/dev/null 2>&1; then
+            echo 'v2.0.0 already exists; published assets are preserved.'
           else
-            gh release create v1.5.2 --target "$SOURCE_SHA" --title 'XYRO 1.5.2 — исправления инструментов и продолжения' --notes-file docs/release-v1.5.2.md release-assets/*
+            gh release create v2.0.0 --target "$SOURCE_SHA" --title 'XYRO 2.0.0 — DAST, SSL, Censys и механические агенты' --notes-file docs/release-v2.0.0.md release-assets/*
           fi
