@@ -1,0 +1,2 @@
+# Pinned trust store: preserve exact bytes on Windows and Unix checkouts.
+tools/patches/ca-bundle.pem -text
